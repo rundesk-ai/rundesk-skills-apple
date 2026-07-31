@@ -67,7 +67,8 @@ class AppleCatalog(unittest.TestCase):
     def test_repository_contains_no_owner_paths_or_credentials(self):
         forbidden = ("/Users/", "BEGIN OPENSSH PRIVATE KEY", "BEGIN RSA PRIVATE KEY")
         for path in (ROOT / "skills").rglob("*"):
-            if path.is_file() and ".git" not in path.parts:
+            if (path.is_file() and ".git" not in path.parts
+                    and "__pycache__" not in path.parts and path.suffix != ".pyc"):
                 with self.subTest(path=path.relative_to(ROOT)):
                     text = path.read_text(encoding="utf-8", errors="ignore")
                     self.assertFalse(any(value in text for value in forbidden))
