@@ -11,6 +11,18 @@ rundesk skills grant <agent> apple-calendar
 ```
 
 Installation makes all four skills available and grants none automatically.
+If a custom skill already uses any declared name, the complete catalog installation fails and
+leaves that custom package unchanged.
+
+```sh
+rundesk skills catalogs
+rundesk skills update rundesk-skills-apple
+rundesk skills remove rundesk-skills-apple
+```
+
+Every update restores the repository's complete package files, including scripts and executable
+permissions. Configuration, permission grants, caches, and state remain outside those packages.
+Removal requires `--yes` and is refused while any Apple skill is granted.
 
 ## Included skills
 
