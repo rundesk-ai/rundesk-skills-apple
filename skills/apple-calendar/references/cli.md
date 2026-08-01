@@ -6,10 +6,6 @@ category: local
 
 # apple-calendar
 
-## Use When
-
-Use this tool when an agent needs Apple Calendar / Calendar.app as the local source of truth for iCloud-synced calendars and events. Read commands are for EventKit source, calendar, event, availability, search, and export context. Write commands are for safe event create, update, and delete operations.
-
 ## Entry Point
 
 - Verify read access: `apple-calendar read status`
@@ -47,7 +43,7 @@ Event invitation response status is readable through `show` attendee/organizer f
 
 ## Provider
 
-This integration is self-contained: its provider contract lives here, in this README, not in a separate file or a shared folder. It manages local macOS Calendar.app events through EventKit.
+This integration is self-contained: its provider contract lives in this reference, not in a separate file or shared folder. It manages local macOS Calendar.app events through EventKit.
 
 EventKit is the source-of-truth path for both reads and writes. Calendar.app and the configured iCloud/CalDAV/Exchange accounts own sync consistency. Direct Calendar SQLite reads or writes are not part of this tool.
 

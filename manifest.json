@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "name": "rundesk-skills-apple",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Guarded local integrations for Apple Calendar, Contacts, Mail, and Messages.",
   "skills": [
     {"name": "apple-calendar", "path": "skills/apple-calendar"},

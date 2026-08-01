@@ -1,6 +1,6 @@
 ---
 name: apple-messages
-description: Read local Apple Messages data and perform guarded one-to-one sends through the apple-messages CLI. Use when a task mentions Messages.app, iMessage, SMS, RCS, chats, unread texts, or local message history.
+description: Read Apple Messages history or preview guarded one-to-one sends with the bundled CLI. Use for Messages.app, iMessage, SMS, RCS, chats, unread texts, or local message history.
 ---
 
 # Apple Messages

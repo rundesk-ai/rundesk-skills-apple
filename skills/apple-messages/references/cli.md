@@ -6,10 +6,6 @@ category: local
 
 # apple-messages
 
-## Use When
-
-Use this tool when an agent needs local Apple Messages / Messages.app as the source of truth for iMessage, SMS, and RCS conversation context. Read commands are for local message, chat, unread, needs-reply, attachment, schema, and export context. Send commands are for guarded one-to-one Messages.app sends.
-
 ## Entry Point
 
 - Verify read access: `apple-messages read status`
@@ -43,7 +39,7 @@ Message rows with attachments include an exact `attachment_command=...` value, i
 
 ## Provider
 
-This integration is self-contained: its provider contract lives here, in this README, not in a separate file or a shared folder. It treats local macOS Messages data as the source of truth and sends one-to-one messages through Messages.app.
+This integration is self-contained: its provider contract lives in this reference, not in a separate file or shared folder. It treats local macOS Messages data as the source of truth and sends one-to-one messages through Messages.app.
 
 The read CLI treats `~/Library/Messages/chat.db` as the local source of truth for Messages channel state. The send CLI uses Messages.app AppleScript so macOS and Messages own delivery, account selection, and iCloud consistency. Direct SQLite writes are forbidden.
 

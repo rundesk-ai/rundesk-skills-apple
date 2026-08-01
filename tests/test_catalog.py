@@ -38,6 +38,18 @@ class AppleCatalog(unittest.TestCase):
                 self.assertEqual(name, package.name)
                 page = (package / "SKILL.md").read_text(encoding="utf-8")
                 self.assertRegex(page, rf"(?m)^name: {re.escape(name)}$")
+                frontmatter = page.split("---", 2)[1]
+                keys = [line.split(":", 1)[0] for line in frontmatter.splitlines()
+                        if line and not line.startswith(" ")]
+                self.assertEqual(["name", "description"], keys)
+                description = re.search(
+                    r"(?m)^description: (.+)$", frontmatter
+                ).group(1)
+                self.assertLessEqual(len(description), 1024)
+                self.assertIn("Use ", description)
+                self.assertLess(len(page.splitlines()), 500)
+                self.assertFalse((package / "README.md").exists())
+                self.assertFalse((package / "CHANGELOG.md").exists())
                 self.assertTrue((package / "scripts" / name).is_file())
 
     def test_every_launcher_has_credential_free_help(self):
@@ -72,6 +84,8 @@ class AppleCatalog(unittest.TestCase):
                 with self.subTest(path=path.relative_to(ROOT)):
                     text = path.read_text(encoding="utf-8", errors="ignore")
                     self.assertFalse(any(value in text for value in forbidden))
+                    self.assertNotIn("## Use When", text)
+                    self.assertNotIn("in this README", text)
 
 
 if __name__ == "__main__":

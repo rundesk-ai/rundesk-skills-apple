@@ -1,6 +1,6 @@
 ---
 name: apple-contacts
-description: Read and safely manage local Apple Contacts / AddressBook data through the local apple-contacts CLI. Use when a task mentions contacts, AddressBook, phone numbers, people lookup, or contact groups.
+description: Read or safely manage Apple Contacts data with the bundled CLI. Use for contacts, AddressBook, phone numbers, people lookup, contact groups, or Contacts.app.
 ---
 
 # Apple Contacts
