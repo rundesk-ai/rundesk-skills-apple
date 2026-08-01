@@ -281,7 +281,7 @@ def readable_score(value: str) -> tuple[int, int, int]:
             "yes",
             "you",
             "your",
-            "tim",
+            "thanks",
         }
     )
     return (common, len(words), -len(value))
