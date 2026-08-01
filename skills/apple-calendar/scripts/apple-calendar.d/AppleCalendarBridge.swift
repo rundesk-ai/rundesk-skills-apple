@@ -1,8 +1,24 @@
 import EventKit
 import Foundation
 
+let bridgeResponsePath = CommandLine.arguments.count == 4 ? CommandLine.arguments[2] : nil
+let bridgeErrorPath = CommandLine.arguments.count == 4 ? CommandLine.arguments[3] : nil
+
+func writeBridgeData(_ data: Data, path: String?, fallback: FileHandle) {
+    if let path = path {
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            return
+        } catch {
+            fallback.write(Data("error: unable to write bridge result: \(error.localizedDescription)\n".utf8))
+            exit(1)
+        }
+    }
+    fallback.write(data)
+}
+
 func fail(_ message: String) -> Never {
-    FileHandle.standardError.write(Data("error: \(message)\n".utf8))
+    writeBridgeData(Data("error: \(message)\n".utf8), path: bridgeErrorPath, fallback: .standardError)
     exit(1)
 }
 
@@ -21,8 +37,7 @@ func jsonObject(from path: String) -> [String: Any] {
 func printJSON(_ object: Any) {
     do {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        FileHandle.standardOutput.write(data)
-        FileHandle.standardOutput.write(Data("\n".utf8))
+        writeBridgeData(data + Data("\n".utf8), path: bridgeResponsePath, fallback: .standardOutput)
     } catch {
         fail("unable to encode JSON: \(error.localizedDescription)")
     }
@@ -122,7 +137,7 @@ func requestCalendarAccess(_ store: EKEventStore) {
         }
     }
 
-    if semaphore.wait(timeout: .now() + 30) == .timedOut {
+    if semaphore.wait(timeout: .now() + 60) == .timedOut {
         fail("timed out waiting for Calendar access")
     }
     if !granted {
@@ -690,8 +705,8 @@ func commandDelete(_ store: EKEventStore, request: [String: Any]) {
     printJSON(["operation": "delete", "saved": confirmed, "event": snapshot])
 }
 
-guard CommandLine.arguments.count == 2 else {
-    fail("usage: AppleCalendarBridge <request.json>")
+guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 4 else {
+    fail("usage: AppleCalendarBridge <request.json> [response.json error.txt]")
 }
 
 let request = jsonObject(from: CommandLine.arguments[1])

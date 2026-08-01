@@ -7,8 +7,9 @@ description: Read Apple Messages history or preview guarded one-to-one sends wit
 
 Run the bundled CLI at `$RUNDESK_SKILLS/apple-messages/scripts/apple-messages`. Reads open
 `~/Library/Messages/chat.db` read-only; sends use Messages.app AppleScript. Full Disk
-Access and Automation permission may be required. Read `references/cli.md` only for
-setup or validation details.
+Access for the process serving the Rundesk agent and Automation permission may be required.
+Restart the agent after changing Full Disk Access. Read `references/cli.md` only for setup or
+validation details.
 
 Start with access checks:
 

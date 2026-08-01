@@ -33,6 +33,7 @@ from typing import Any
 SCHEMA_VERSION = "1.0"
 DEFAULT_DB = Path.home() / "Library" / "Messages" / "chat.db"
 SERVICES = ("auto", "iMessage", "SMS", "RCS")
+MAX_BODY_LENGTH = 100_000
 
 
 class AppleMessagesSendError(RuntimeError):
@@ -69,6 +70,14 @@ def text(value: Any, fallback: str = "-") -> str:
 def truncate(value: Any, limit: int = 180) -> str:
     value = text(value)
     return value if len(value) <= limit else value[: limit - 3].rstrip() + "..."
+
+
+def message_body(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("body must not be empty")
+    if len(value) > MAX_BODY_LENGTH:
+        raise argparse.ArgumentTypeError(f"body must not exceed {MAX_BODY_LENGTH} characters")
+    return value
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -251,10 +260,21 @@ def run_osascript(script: str, args: list[str] | None = None) -> subprocess.Comp
     if args:
         command.extend(args)
     try:
-        return subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.run(
+            command,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
     except subprocess.CalledProcessError as exc:
         error = (exc.stderr or exc.stdout or str(exc)).strip()
         raise AppleMessagesSendError(f"Messages AppleScript failed: {error}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise AppleMessagesSendError(
+            "Messages AppleScript timed out; if this was a confirmed send, delivery is indeterminate, so check the conversation before retrying"
+        ) from exc
 
 
 def send_payload(target: SendTarget, body: str, confirm: bool) -> dict[str, Any]:
@@ -373,7 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_db_option(send)
     send.add_argument("--chat-id", type=int, help="One-to-one Messages chat ROWID.")
     send.add_argument("--to", help="Recipient phone number or Apple ID email.")
-    send.add_argument("--body", required=True, help="Exact message body to send.")
+    send.add_argument("--body", required=True, type=message_body, help="Exact message body to send.")
     send.add_argument("--service", choices=SERVICES, default="auto", help="Requested service. RCS maps through AppleScript SMS.")
     send.add_argument("--confirm", action="store_true", help="Actually send the message.")
     send.add_argument("--json", action="store_true")

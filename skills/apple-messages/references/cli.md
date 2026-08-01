@@ -53,7 +53,8 @@ Send commands are dry-runs unless `--confirm` is passed after the owner has expl
 
 Messages must already be signed in on the Mac. The terminal or Codex host app may need macOS privacy permissions:
 
-- Full Disk Access or equivalent file permission for direct reads under `~/Library/Messages/`.
+- Full Disk Access for the process that serves the Rundesk agent, not only an interactive terminal,
+  for direct reads under `~/Library/Messages/`. Restart the agent after changing this grant.
 - Automation permission to control Messages.app for send status checks and confirmed sends.
 
 Verify read access:

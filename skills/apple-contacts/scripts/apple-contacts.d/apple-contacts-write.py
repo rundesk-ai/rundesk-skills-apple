@@ -31,10 +31,12 @@ Write/mutation behavior:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +46,10 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BRIDGE_SOURCE = SCRIPT_DIR / "AppleContactsBridge.swift"
+BRIDGE_LAUNCHER_SOURCE = SCRIPT_DIR / "ApplePermissionLauncher.swift"
+BRIDGE_INFO_PLIST = SCRIPT_DIR / "AppleContactsBridge-Info.plist"
+BRIDGE_IDENTIFIER = "ai.rundesk.apple-contacts.bridge"
+BRIDGE_WORKER_IDENTIFIER = f"{BRIDGE_IDENTIFIER}.worker"
 
 
 def _cache_dir() -> Path:
@@ -53,6 +59,8 @@ def _cache_dir() -> Path:
 
 
 CACHE_DIR = _cache_dir()
+BRIDGE_BUNDLE = CACHE_DIR / "RundeskAppleContacts.app"
+BRIDGE_LAUNCHER_BINARY = BRIDGE_BUNDLE / "Contents" / "MacOS" / "rundesk-apple-contacts-launcher"
 BRIDGE_BINARY = CACHE_DIR / "apple-contacts-bridge"
 
 AUTHORIZATION_STATES = {
@@ -96,40 +104,202 @@ CONTACT_FIELDS = CONTACT_SCALAR_FIELDS | CONTACT_ARRAY_FIELDS
 
 
 def bridge_source_hash() -> str:
-    return hashlib.sha256(BRIDGE_SOURCE.read_bytes()).hexdigest()[:12]
+    digest = hashlib.sha256()
+    for path in (BRIDGE_SOURCE, BRIDGE_INFO_PLIST):
+        digest.update(path.read_bytes())
+    digest.update(BRIDGE_WORKER_IDENTIFIER.encode("utf-8"))
+    return digest.hexdigest()[:12]
+
+
+def launcher_source_hash() -> str:
+    digest = hashlib.sha256()
+    for path in (BRIDGE_LAUNCHER_SOURCE, BRIDGE_INFO_PLIST):
+        digest.update(path.read_bytes())
+    digest.update(BRIDGE_IDENTIFIER.encode("utf-8"))
+    return digest.hexdigest()[:12]
+
+
+def bridge_is_current(stamp: Path) -> bool:
+    return BRIDGE_BINARY.is_file() and stamp.is_file()
+
+
+def launcher_is_current(stamp: Path) -> bool:
+    return (
+        BRIDGE_LAUNCHER_BINARY.is_file()
+        and (BRIDGE_BUNDLE / "Contents" / "Info.plist").is_file()
+        and stamp.is_file()
+    )
+
+
+def compile_bridge(tmp_binary: Path) -> None:
+    command = [
+        "/usr/bin/swiftc",
+        str(BRIDGE_SOURCE),
+        "-Xlinker",
+        "-sectcreate",
+        "-Xlinker",
+        "__TEXT",
+        "-Xlinker",
+        "__info_plist",
+        "-Xlinker",
+        str(BRIDGE_INFO_PLIST),
+        "-o",
+        str(tmp_binary),
+    ]
+    result = subprocess.run(command, cwd=SCRIPT_DIR, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise AppleContactsWriteError(
+            f"failed to compile Contacts bridge: {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+    result = subprocess.run(
+        [
+            "/usr/bin/codesign",
+            "--force",
+            "--sign",
+            "-",
+            "--identifier",
+            BRIDGE_WORKER_IDENTIFIER,
+            str(tmp_binary),
+        ],
+        cwd=SCRIPT_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AppleContactsWriteError(
+            f"failed to sign Contacts bridge: {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+    result = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--strict", str(tmp_binary)],
+        cwd=SCRIPT_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AppleContactsWriteError(
+            f"failed to verify Contacts bridge signature: {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def compile_permission_launcher(tmp_binary: Path) -> None:
+    result = subprocess.run(
+        [
+            "/usr/bin/swiftc",
+            str(BRIDGE_LAUNCHER_SOURCE),
+            "-Xlinker",
+            "-sectcreate",
+            "-Xlinker",
+            "__TEXT",
+            "-Xlinker",
+            "__info_plist",
+            "-Xlinker",
+            str(BRIDGE_INFO_PLIST),
+            "-o",
+            str(tmp_binary),
+        ],
+        cwd=SCRIPT_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AppleContactsWriteError(
+            f"failed to compile Contacts permission launcher: {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def sign_bridge_bundle(bundle: Path) -> None:
+    result = subprocess.run(
+        [
+            "/usr/bin/codesign",
+            "--force",
+            "--sign",
+            "-",
+            "--identifier",
+            BRIDGE_IDENTIFIER,
+            str(bundle),
+        ],
+        cwd=SCRIPT_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AppleContactsWriteError(
+            f"failed to sign Contacts bridge app: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    result = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--strict", str(bundle)],
+        cwd=SCRIPT_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AppleContactsWriteError(
+            f"failed to verify Contacts bridge app signature: {result.stderr.strip() or result.stdout.strip()}"
+        )
 
 
 def ensure_bridge_binary() -> Path:
-    if not BRIDGE_SOURCE.is_file():
-        raise AppleContactsWriteError(f"Contacts bridge source not found: {BRIDGE_SOURCE}")
+    for path, label in (
+        (BRIDGE_SOURCE, "source"),
+        (BRIDGE_LAUNCHER_SOURCE, "permission launcher source"),
+        (BRIDGE_INFO_PLIST, "Info.plist"),
+    ):
+        if not path.is_file():
+            raise AppleContactsWriteError(f"Contacts bridge {label} not found: {path}")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = CACHE_DIR / f"{BRIDGE_BINARY.name}.{bridge_source_hash()}.stamp"
-    if BRIDGE_BINARY.is_file() and stamp.is_file() and BRIDGE_BINARY.stat().st_mtime >= BRIDGE_SOURCE.stat().st_mtime:
+    bridge_stamp = CACHE_DIR / f"{BRIDGE_BINARY.name}.{bridge_source_hash()}.stamp"
+    launcher_stamp = CACHE_DIR / f"permission-launcher.{launcher_source_hash()}.stamp"
+    if bridge_is_current(bridge_stamp) and launcher_is_current(launcher_stamp):
         return BRIDGE_BINARY
 
-    tmp_file = tempfile.NamedTemporaryFile(prefix=f".{BRIDGE_BINARY.name}.", dir=CACHE_DIR, delete=False)
-    tmp_binary = Path(tmp_file.name)
-    tmp_file.close()
-    try:
-        result = subprocess.run(
-            ["/usr/bin/swiftc", str(BRIDGE_SOURCE), "-o", str(tmp_binary)],
-            cwd=SCRIPT_DIR,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise AppleContactsWriteError(
-                f"failed to compile Contacts bridge: {result.stderr.strip() or result.stdout.strip()}"
-            )
-        tmp_binary.replace(BRIDGE_BINARY)
-        for old_stamp in CACHE_DIR.glob(f"{BRIDGE_BINARY.name}.*.stamp"):
-            old_stamp.unlink(missing_ok=True)
-        stamp.write_text("", encoding="utf-8")
+    lock_path = CACHE_DIR / f".{BRIDGE_BINARY.name}.lock"
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if bridge_is_current(bridge_stamp) and launcher_is_current(launcher_stamp):
+            return BRIDGE_BINARY
+
+        if not bridge_is_current(bridge_stamp):
+            tmp_file = tempfile.NamedTemporaryFile(prefix=f".{BRIDGE_BINARY.name}.", dir=CACHE_DIR, delete=False)
+            tmp_binary = Path(tmp_file.name)
+            tmp_file.close()
+            try:
+                compile_bridge(tmp_binary)
+                tmp_binary.replace(BRIDGE_BINARY)
+            finally:
+                tmp_binary.unlink(missing_ok=True)
+            for old_stamp in CACHE_DIR.glob(f"{BRIDGE_BINARY.name}.*.stamp"):
+                old_stamp.unlink(missing_ok=True)
+            bridge_stamp.write_text("", encoding="utf-8")
+
+        if not launcher_is_current(launcher_stamp):
+            tmp_bundle = Path(tempfile.mkdtemp(prefix=f".{BRIDGE_BUNDLE.name}.", dir=CACHE_DIR))
+            tmp_launcher = tmp_bundle / "Contents" / "MacOS" / BRIDGE_LAUNCHER_BINARY.name
+            try:
+                tmp_launcher.parent.mkdir(parents=True)
+                shutil.copyfile(BRIDGE_INFO_PLIST, tmp_bundle / "Contents" / "Info.plist")
+                compile_permission_launcher(tmp_launcher)
+                sign_bridge_bundle(tmp_bundle)
+                if BRIDGE_BUNDLE.is_symlink() or BRIDGE_BUNDLE.is_file():
+                    BRIDGE_BUNDLE.unlink()
+                elif BRIDGE_BUNDLE.is_dir():
+                    shutil.rmtree(BRIDGE_BUNDLE)
+                tmp_bundle.replace(BRIDGE_BUNDLE)
+            finally:
+                if tmp_bundle.is_dir():
+                    shutil.rmtree(tmp_bundle)
+            for old_stamp in CACHE_DIR.glob("permission-launcher.*.stamp"):
+                old_stamp.unlink(missing_ok=True)
+            launcher_stamp.write_text("", encoding="utf-8")
+
         return BRIDGE_BINARY
-    finally:
-        tmp_binary.unlink(missing_ok=True)
 
 
 def run_bridge(request: dict[str, Any]) -> dict[str, Any]:
@@ -143,26 +313,50 @@ def run_bridge(request: dict[str, Any]) -> dict[str, Any]:
         delete=False,
     )
     request_path = Path(request_file.name)
+    response_file = tempfile.NamedTemporaryFile(prefix="response-", suffix=".json", dir=CACHE_DIR, delete=False)
+    response_path = Path(response_file.name)
+    response_file.close()
+    error_file = tempfile.NamedTemporaryFile(prefix="error-", suffix=".txt", dir=CACHE_DIR, delete=False)
+    error_path = Path(error_file.name)
+    error_file.close()
     try:
         with request_file:
             json.dump(request, request_file, ensure_ascii=True)
+        ensure_bridge_binary()
         result = subprocess.run(
-            [str(ensure_bridge_binary()), str(request_path)],
+            [
+                "/usr/bin/open",
+                "-W",
+                "-n",
+                str(BRIDGE_BUNDLE),
+                "--args",
+                str(BRIDGE_BINARY),
+                str(request_path),
+                str(response_path),
+                str(error_path),
+            ],
             cwd=SCRIPT_DIR,
             text=True,
             capture_output=True,
             check=False,
+            timeout=75,
         )
+        bridge_stdout = response_path.read_text(encoding="utf-8", errors="replace")
+        bridge_stderr = error_path.read_text(encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired as exc:
+        raise AppleContactsWriteError("Contacts bridge timed out waiting for macOS Contacts access") from exc
     finally:
         request_path.unlink(missing_ok=True)
+        response_path.unlink(missing_ok=True)
+        error_path.unlink(missing_ok=True)
 
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+    if result.returncode != 0 or not bridge_stdout.strip():
+        detail = bridge_stderr.strip() or result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise AppleContactsWriteError(f"Contacts bridge failed: {detail}")
     try:
-        parsed = json.loads(result.stdout)
+        parsed = json.loads(bridge_stdout)
     except json.JSONDecodeError as exc:
-        raise AppleContactsWriteError(f"Contacts bridge returned non-JSON output: {result.stdout[:500]!r}") from exc
+        raise AppleContactsWriteError(f"Contacts bridge returned non-JSON output: {bridge_stdout[:500]!r}") from exc
     if not isinstance(parsed, dict):
         raise AppleContactsWriteError("Contacts bridge returned a non-object JSON payload")
     return parsed

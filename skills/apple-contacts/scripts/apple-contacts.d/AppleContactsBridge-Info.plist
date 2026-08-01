@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>ai.rundesk.apple-contacts.bridge</string>
+    <key>CFBundleExecutable</key>
+    <string>rundesk-apple-contacts-launcher</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Rundesk Apple Contacts</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSContactsUsageDescription</key>
+    <string>Rundesk needs access to safely manage the contacts requested by the owner.</string>
+</dict>
+</plist>

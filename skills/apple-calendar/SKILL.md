@@ -6,7 +6,8 @@ description: Read or safely manage Apple Calendar events with the bundled CLI. U
 # Apple Calendar
 
 Run the bundled CLI at `$RUNDESK_SKILLS/apple-calendar/scripts/apple-calendar`. It talks
-to the signed-in Mac's EventKit store; macOS Calendar permission may be required. Read
+to the signed-in Mac's EventKit store through the stable **Rundesk Apple Calendar** helper;
+approve its macOS Calendar prompt when the owner is present. Read
 `references/cli.md` only for setup, payload, or validation details.
 
 Start with access checks:

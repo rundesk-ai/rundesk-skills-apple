@@ -2,8 +2,24 @@ import AddressBook
 import Contacts
 import Foundation
 
+let bridgeResponsePath = CommandLine.arguments.count == 4 ? CommandLine.arguments[2] : nil
+let bridgeErrorPath = CommandLine.arguments.count == 4 ? CommandLine.arguments[3] : nil
+
+func writeBridgeData(_ data: Data, path: String?, fallback: FileHandle) {
+    if let path = path {
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            return
+        } catch {
+            fallback.write(Data("error: unable to write bridge result: \(error.localizedDescription)\n".utf8))
+            exit(1)
+        }
+    }
+    fallback.write(data)
+}
+
 func fail(_ message: String) -> Never {
-    FileHandle.standardError.write(Data("error: \(message)\n".utf8))
+    writeBridgeData(Data("error: \(message)\n".utf8), path: bridgeErrorPath, fallback: .standardError)
     exit(1)
 }
 
@@ -22,8 +38,7 @@ func jsonObject(from path: String) -> [String: Any] {
 func printJSON(_ object: Any) {
     do {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        FileHandle.standardOutput.write(data)
-        FileHandle.standardOutput.write(Data("\n".utf8))
+        writeBridgeData(data + Data("\n".utf8), path: bridgeResponsePath, fallback: .standardOutput)
     } catch {
         fail("unable to encode JSON: \(error.localizedDescription)")
     }
@@ -121,7 +136,7 @@ func requestContactsAccess(_ store: CNContactStore) {
         accessError = error
         semaphore.signal()
     }
-    if semaphore.wait(timeout: .now() + 30) == .timedOut {
+    if semaphore.wait(timeout: .now() + 60) == .timedOut {
         fail("timed out waiting for Contacts access")
     }
     if !granted {
@@ -562,8 +577,8 @@ func response(_ operation: String, _ confirm: Bool, _ values: [String: Any]) -> 
 }
 
 let args = CommandLine.arguments
-if args.count != 2 {
-    fail("usage: AppleContactsBridge <request.json>")
+if args.count != 2 && args.count != 4 {
+    fail("usage: AppleContactsBridge <request.json> [response.json error.txt]")
 }
 
 let request = jsonObject(from: args[1])
@@ -574,6 +589,7 @@ let confirm = bool(request, "confirm")
 let store = CNContactStore()
 
 if operation == "status" {
+    requestContactsAccess(store)
     printJSON([
         "status": "ok",
         "operation": operation,
