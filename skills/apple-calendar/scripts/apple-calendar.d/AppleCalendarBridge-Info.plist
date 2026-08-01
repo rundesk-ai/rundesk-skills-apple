@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>ai.rundesk.apple-calendar.eventkit</string>
+    <key>CFBundleExecutable</key>
+    <string>rundesk-apple-calendar-launcher</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Rundesk Apple Calendar</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Rundesk needs access to read and safely manage the calendar events requested by the owner.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Rundesk needs access to read and safely manage the calendar events requested by the owner.</string>
+</dict>
+</plist>

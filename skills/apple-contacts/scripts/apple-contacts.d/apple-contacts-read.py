@@ -40,10 +40,21 @@ from typing import Any
 DEFAULT_ADDRESSBOOK_ROOT = Path.home() / "Library" / "Application Support" / "AddressBook"
 APPLE_EPOCH_OFFSET = 978_307_200
 SCHEMA_VERSION = 1
+MAX_LIMIT = 1000
 
 
 class AppleContactsReadError(RuntimeError):
     pass
+
+
+def positive_limit(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be an integer") from exc
+    if parsed < 1 or parsed > MAX_LIMIT:
+        raise argparse.ArgumentTypeError(f"limit must be between 1 and {MAX_LIMIT}")
+    return parsed
 
 
 def clean(value: Any, fallback: str = "") -> str:
@@ -1042,7 +1053,7 @@ def build_parser() -> argparse.ArgumentParser:
     sources.set_defaults(handler=command_sources)
 
     list_cmd = subparsers.add_parser("list", help="List contacts as stable rows.")
-    list_cmd.add_argument("--limit", type=int, default=200)
+    list_cmd.add_argument("--limit", type=positive_limit, default=200)
     list_cmd.add_argument("--all", action="store_true", help="List all contacts instead of the first --limit rows.")
     list_cmd.add_argument("--json", action="store_true")
     add_include_blobs(list_cmd)
@@ -1050,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     search = subparsers.add_parser("search", help="Search contacts by name, org, handle, note, or group.")
     search.add_argument("query")
-    search.add_argument("--limit", type=int, default=20)
+    search.add_argument("--limit", type=positive_limit, default=20)
     search.add_argument("--json", action="store_true")
     add_include_blobs(search)
     search.set_defaults(handler=command_search)

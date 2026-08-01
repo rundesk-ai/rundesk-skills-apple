@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -326,6 +327,29 @@ class AppleMessagesSendTest(unittest.TestCase):
             self.assertEqual(self.send_module.main(["status"]), 0)
 
         self.assertIn("Apple Messages send access ok", output.getvalue())
+
+    def test_empty_and_oversized_bodies_are_rejected(self) -> None:
+        for body, expected in (
+            ("", "body must not be empty"),
+            ("x" * 100_001, "body must not exceed 100000 characters"),
+        ):
+            with self.subTest(expected=expected):
+                stderr = io.StringIO()
+                with self.assertRaises(SystemExit), redirect_stderr(stderr):
+                    self.send_module.main(["send", "--to", "+15550100001", "--body", body])
+                self.assertIn(expected, stderr.getvalue())
+
+    def test_applescript_timeout_reports_indeterminate_send(self) -> None:
+        with patch.object(
+            self.send_module.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["osascript"], 30),
+        ):
+            with self.assertRaisesRegex(
+                self.send_module.AppleMessagesSendError,
+                "delivery is indeterminate",
+            ):
+                self.send_module.run_osascript("example", ["SMS", "+15550100001", "hello"])
 
     def test_send_to_is_dry_run_by_default(self) -> None:
         output = io.StringIO()

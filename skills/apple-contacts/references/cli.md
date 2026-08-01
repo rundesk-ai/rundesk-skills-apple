@@ -25,12 +25,18 @@ The same-name dispatcher also works:
 "$RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts" write groups list
 ```
 
-Read commands open AddressBook SQLite in read-only mode. Write commands use the bundled Swift Contacts.framework bridge compiled into `.cache/apple-contacts/` on first use. `groups remove-contact` verifies the Contacts.framework removal and falls back to Apple's legacy AddressBook.framework only when Contacts.framework reports success but leaves the member in place. Mutation commands are dry-runs unless `--confirm` is passed.
+Read commands open AddressBook SQLite in read-only mode. Write commands use a stable background-only
+permission broker to launch the replaceable Contacts.framework worker from the user's XDG cache.
+`groups remove-contact` verifies the Contacts.framework removal and falls back
+to Apple's legacy AddressBook.framework only when Contacts.framework reports success but leaves
+the member in place. Mutation commands are dry-runs unless `--confirm` is passed.
 
 ## Validation
 
 - Run `python3 $RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts.d/test-apple-contacts.py` for offline tests with synthetic AddressBook data.
-- Run `/usr/bin/swiftc $RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts.d/AppleContactsBridge.swift -o /tmp/apple-contacts-bridge-check` for a Swift compile check.
+- The offline suite compiles, signs, and verifies the permission broker and Contacts worker. Its
+  catalog-update regression rebuilds changed worker source while proving the approved broker's
+  bytes, stable identifier, signature, and embedded privacy purpose string do not change.
 - Run `apple-contacts read sources` as a live read smoke test.
 - Run `apple-contacts write status` as a live Contacts.framework permission smoke test.
 - Optional live mutation test: `APPLE_CONTACTS_LIVE_TESTS=1 python3 $RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts.d/test-apple-contacts.py`. This creates, updates, groups, ungroups, and deletes one synthetic contact with a unique marker.
@@ -49,8 +55,13 @@ Never write directly to AddressBook SQLite. Direct DB reads are allowed; direct 
 
 The local Mac must have Contacts configured. The terminal or Codex host app may need macOS privacy permissions:
 
-- Full Disk Access or equivalent file permission for direct reads under `~/Library/Application Support/AddressBook/`.
-- Contacts permission for Contacts.framework writes.
+- Full Disk Access for the process that serves the Rundesk agent, not only an interactive terminal,
+  for direct reads under `~/Library/Application Support/AddressBook/`. Restart the agent after
+  changing this grant.
+- Contacts permission for the **Rundesk Apple Contacts** helper. Run `write status` from the agent
+  session and approve its prompt. The stable identifier is `ai.rundesk.apple-contacts.bridge`.
+  If access was previously denied, enable Rundesk Apple Contacts under System Settings > Privacy
+  & Security > Contacts, then rerun status.
 
 Verify read access:
 
@@ -64,7 +75,9 @@ Verify Contacts.framework access:
 "$RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts" write status
 ```
 
-The status command names the Contacts authorization state (`authorized`, `restricted`, `denied`, or `notDetermined`). It exits zero with `status=ok` only when authorized; every other state exits nonzero with `status=not_authorized`.
+The status command names the macOS Contacts authorization state (`authorized`, `restricted`,
+`denied`, or `notDetermined`). It exits zero with `status=ok` only when authorized; every other
+state exits nonzero with `status=not_authorized`.
 
 ### Read Workflow
 

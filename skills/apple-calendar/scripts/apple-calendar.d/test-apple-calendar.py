@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -387,6 +388,26 @@ class AppleCalendarWriteTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("attendee/organizer mutation is not supported", stderr.getvalue())
 
+    def test_invalid_duration_is_a_compact_cli_error(self) -> None:
+        payload = Path(self.tmp.name) / "invalid-duration.json"
+        payload.write_text(
+            json.dumps(
+                {
+                    "title": "Example Planning",
+                    "calendar_id": "calendar-example",
+                    "start": "2026-06-25 10:00",
+                    "duration_min": "thirty",
+                }
+            ),
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            rc = self.write_module.main(["create", "--payload", str(payload)])
+
+        self.assertEqual(1, rc)
+        self.assertIn("duration_min must be an integer", stderr.getvalue())
+
     def test_unknown_fields_wrapped_siblings_and_noop_updates_are_rejected(self) -> None:
         unknown_payload = Path(self.tmp.name) / "unknown.json"
         unknown_payload.write_text(
@@ -431,6 +452,76 @@ class AppleCalendarWriteTest(unittest.TestCase):
 
         self.assertLess(was_recurring_pos, apply_changes_pos)
         self.assertLess(apply_changes_pos, guard_pos)
+
+
+class AppleCalendarBridgePackagingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.bridge_module = load_module(
+            "apple_calendar_bridge_packaging",
+            SCRIPT_DIR / "apple_calendar_lib.py",
+        )
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.cache_dir = Path(self.temporary.name)
+        self.bundle = self.cache_dir / "RundeskAppleCalendar.app"
+        self.launcher = self.bundle / "Contents" / "MacOS" / "rundesk-apple-calendar-launcher"
+        self.binary = self.cache_dir / "apple-calendar-eventkit"
+        self.source = self.cache_dir / "AppleCalendarBridge.swift"
+        self.source.write_bytes(self.bridge_module.BRIDGE_SOURCE.read_bytes())
+
+    def signing_details(self, path: Path) -> str:
+        completed = subprocess.run(
+            ["/usr/bin/codesign", "-dvv", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        return completed.stdout + completed.stderr
+
+    def test_rebuild_has_embedded_privacy_description_and_stable_identity(self) -> None:
+        with (
+            patch.object(self.bridge_module, "CACHE_DIR", self.cache_dir),
+            patch.object(self.bridge_module, "BRIDGE_BUNDLE", self.bundle),
+            patch.object(self.bridge_module, "BRIDGE_LAUNCHER_BINARY", self.launcher),
+            patch.object(self.bridge_module, "BRIDGE_BINARY", self.binary),
+            patch.object(self.bridge_module, "BRIDGE_SOURCE", self.source),
+        ):
+            self.assertEqual(self.binary, self.bridge_module.ensure_bridge_binary())
+            first_launcher_digest = hashlib.sha256(self.launcher.read_bytes()).hexdigest()
+            first_launcher_details = self.signing_details(self.launcher)
+            first_worker_details = self.signing_details(self.binary)
+            self.source.write_text(
+                self.source.read_text(encoding="utf-8") + "\n// synthetic catalog update\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(self.binary, self.bridge_module.ensure_bridge_binary())
+            second_launcher_digest = hashlib.sha256(self.launcher.read_bytes()).hexdigest()
+            second_launcher_details = self.signing_details(self.launcher)
+            second_worker_details = self.signing_details(self.binary)
+
+        self.assertEqual(first_launcher_digest, second_launcher_digest)
+        for details in (first_launcher_details, second_launcher_details):
+            self.assertIn("Identifier=ai.rundesk.apple-calendar.eventkit", details)
+            self.assertIn("Info.plist entries=", details)
+        for details in (first_worker_details, second_worker_details):
+            self.assertIn("Identifier=ai.rundesk.apple-calendar.eventkit.worker", details)
+        strings = subprocess.run(
+            ["/usr/bin/strings", str(self.launcher)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertIn("NSCalendarsFullAccessUsageDescription", strings)
+        self.assertIn("NSCalendarsUsageDescription", strings)
+        self.assertEqual(
+            0,
+            subprocess.run(
+                ["/usr/bin/codesign", "--verify", "--strict", str(self.bundle)],
+                capture_output=True,
+                check=False,
+            ).returncode,
+        )
 
 
 class AppleCalendarLiveSafetyTest(unittest.TestCase):

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -14,7 +15,7 @@ import tempfile
 import time
 import unittest
 import uuid
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -371,6 +372,14 @@ class AppleContactsReadTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(output.getvalue().startswith(header), output.getvalue())
 
+    def test_list_and_search_reject_unbounded_limits(self) -> None:
+        for command in (("list", "--limit", "0"), ("search", "Ada", "--limit", "1001")):
+            with self.subTest(command=command):
+                stderr = io.StringIO()
+                with self.assertRaises(SystemExit), redirect_stderr(stderr):
+                    self.read_module.main(["--addressbook-root", str(self.root), *command])
+                self.assertIn("limit must be between 1 and 1000", stderr.getvalue())
+
 
 class AppleContactsWriteTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -668,6 +677,75 @@ class AppleContactsWriteTest(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing operation", result.stderr)
+
+
+class AppleContactsBridgePackagingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.bridge_module = load_module(
+            "apple_contacts_bridge_packaging",
+            WRITE_SCRIPT,
+        )
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.cache_dir = Path(self.temporary.name)
+        self.bundle = self.cache_dir / "RundeskAppleContacts.app"
+        self.launcher = self.bundle / "Contents" / "MacOS" / "rundesk-apple-contacts-launcher"
+        self.binary = self.cache_dir / "apple-contacts-bridge"
+        self.source = self.cache_dir / "AppleContactsBridge.swift"
+        self.source.write_bytes(self.bridge_module.BRIDGE_SOURCE.read_bytes())
+
+    def signing_details(self, path: Path) -> str:
+        completed = subprocess.run(
+            ["/usr/bin/codesign", "-dvv", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        return completed.stdout + completed.stderr
+
+    def test_rebuild_has_embedded_privacy_description_and_stable_identity(self) -> None:
+        with (
+            patch.object(self.bridge_module, "CACHE_DIR", self.cache_dir),
+            patch.object(self.bridge_module, "BRIDGE_BUNDLE", self.bundle),
+            patch.object(self.bridge_module, "BRIDGE_LAUNCHER_BINARY", self.launcher),
+            patch.object(self.bridge_module, "BRIDGE_BINARY", self.binary),
+            patch.object(self.bridge_module, "BRIDGE_SOURCE", self.source),
+        ):
+            self.assertEqual(self.binary, self.bridge_module.ensure_bridge_binary())
+            first_launcher_digest = hashlib.sha256(self.launcher.read_bytes()).hexdigest()
+            first_launcher_details = self.signing_details(self.launcher)
+            first_worker_details = self.signing_details(self.binary)
+            self.source.write_text(
+                self.source.read_text(encoding="utf-8") + "\n// synthetic catalog update\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(self.binary, self.bridge_module.ensure_bridge_binary())
+            second_launcher_digest = hashlib.sha256(self.launcher.read_bytes()).hexdigest()
+            second_launcher_details = self.signing_details(self.launcher)
+            second_worker_details = self.signing_details(self.binary)
+
+        self.assertEqual(first_launcher_digest, second_launcher_digest)
+        for details in (first_launcher_details, second_launcher_details):
+            self.assertIn("Identifier=ai.rundesk.apple-contacts.bridge", details)
+            self.assertIn("Info.plist entries=", details)
+        for details in (first_worker_details, second_worker_details):
+            self.assertIn("Identifier=ai.rundesk.apple-contacts.bridge.worker", details)
+        strings = subprocess.run(
+            ["/usr/bin/strings", str(self.launcher)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertIn("NSContactsUsageDescription", strings)
+        self.assertEqual(
+            0,
+            subprocess.run(
+                ["/usr/bin/codesign", "--verify", "--strict", str(self.bundle)],
+                capture_output=True,
+                check=False,
+            ).returncode,
+        )
 
 
 @unittest.skipUnless(os.environ.get("APPLE_CONTACTS_LIVE_TESTS") == "1", "set APPLE_CONTACTS_LIVE_TESTS=1")

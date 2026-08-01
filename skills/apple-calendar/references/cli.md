@@ -34,7 +34,9 @@ Event invitation response status is readable through `show` attendee/organizer f
 ## Validation
 
 - Run `python3 $RUNDESK_SKILLS/apple-calendar/scripts/apple-calendar.d/test-apple-calendar.py` for offline tests with synthetic EventKit bridge payloads.
-- Run `/usr/bin/swiftc $RUNDESK_SKILLS/apple-calendar/scripts/apple-calendar.d/AppleCalendarBridge.swift -o /tmp/apple-calendar-bridge-check` for a Swift compile check.
+- The offline suite compiles, signs, and verifies the permission broker and EventKit worker. Its
+  catalog-update regression rebuilds changed worker source while proving the approved broker's
+  bytes, stable identifier, signature, and embedded privacy purpose strings do not change.
 - Run `apple-calendar read status` as a live read smoke test.
 - Run `apple-calendar read calendars --writable` as a live calendar discovery smoke test.
 - Run `apple-calendar read events --today` as a live event-query smoke test.
@@ -57,7 +59,12 @@ Invitation RSVP responses are also unsupported in v1. EventKit exposes attendee 
 
 ### Setup
 
-The local Mac must have Calendar configured. The terminal or Codex host app may need macOS Calendar permission.
+The local Mac must have Calendar configured. Run the status command from the Rundesk agent
+session and approve the prompt from **Rundesk Apple Calendar**. The helper is a background-only
+app with the stable identifier `ai.rundesk.apple-calendar.eventkit`; normal cache rebuilds and
+catalog updates retain that identity. If access was previously denied, enable Rundesk Apple
+Calendar under System Settings > Privacy & Security > Calendars, then rerun status. Calendar does
+not require Full Disk Access.
 
 Verify read access:
 

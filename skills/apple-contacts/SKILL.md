@@ -6,9 +6,10 @@ description: Read or safely manage Apple Contacts data with the bundled CLI. Use
 # Apple Contacts
 
 Run the bundled CLI at `$RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts`. Reads use
-local AddressBook SQLite; writes use Contacts.framework. Full Disk Access and Contacts
-permission may be required. Read `references/cli.md` only for setup, payload, or validation
-details.
+local AddressBook SQLite; writes use Contacts.framework through the stable **Rundesk Apple
+Contacts** helper. The agent host needs Full Disk Access for direct reads, and the helper needs
+Contacts approval for framework operations. Read `references/cli.md` only for setup, payload,
+or validation details.
 
 Start with access checks:
 
