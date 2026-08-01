@@ -1,6 +1,6 @@
 ---
 name: apple-calendar
-description: Read and safely manage local Apple Calendar / Calendar.app events through the local apple-calendar CLI. Use when a task mentions calendar, schedule, availability, meetings, EventKit, or Calendar.app.
+description: Read or safely manage Apple Calendar events with the bundled CLI. Use for calendars, schedules, availability, meetings, EventKit, or Calendar.app.
 ---
 
 # Apple Calendar

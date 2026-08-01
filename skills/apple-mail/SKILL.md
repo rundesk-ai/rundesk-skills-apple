@@ -1,6 +1,6 @@
 ---
 name: apple-mail
-description: Read Mail.app messages and safely draft or send mail through an explicit local account allowlist via the apple-mail CLI. Use when a task mentions Mail.app, email, inbox, drafts, or local mail accounts.
+description: Read Mail.app messages or safely draft and send allowlisted mail with the bundled CLI. Use for email, inboxes, drafts, local accounts, or any task mentioning Mail.app.
 ---
 
 # Apple Mail

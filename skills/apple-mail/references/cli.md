@@ -6,10 +6,6 @@ category: local
 
 # apple-mail
 
-## Use When
-
-Use this tool when an agent needs Apple Mail / Mail.app as the local source of truth for messages from owner-approved accounts, or needs to prepare or send an explicitly approved email from one of those accounts. Read commands discover accounts, list mailboxes, inspect recent or unread inbox messages, search message metadata, and show one message with bounded content and attachment metadata. Write commands create drafts or send mail through Mail.app with confirmation guards.
-
 ## Entry Point
 
 - Verify Mail.app automation and allowlist status: `apple-mail setup status`
@@ -38,7 +34,13 @@ The same-name dispatcher also works:
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write send --payload email.json
 ```
 
-All message and mailbox commands are restricted to account IDs in `~/.config/workspace/apple-mail.json`. The config is created with owner-only permissions. Account discovery is the only command that can show accounts before they are allowed, so the owner can review stable Mail account IDs. Allow and revoke commands are dry-runs unless `--confirm` is passed after approval of the exact IDs.
+All message and mailbox commands are restricted to account IDs in
+`${XDG_CONFIG_HOME:-$HOME/.config}/rundesk/integrations/apple-mail/accounts.json`.
+The legacy `~/.config/workspace/apple-mail.json` remains readable only when the current
+path does not exist. The config is created with owner-only permissions. Account discovery
+is the only command that can show accounts before they are allowed, so the owner can review
+stable Mail account IDs. Allow and revoke commands are dry-runs unless `--confirm` is passed
+after approval of the exact IDs.
 
 ## Validation
 
@@ -50,7 +52,7 @@ All message and mailbox commands are restricted to account IDs in `~/.config/wor
 
 ## Provider
 
-This integration is self-contained: its provider contract lives here, in this README. It reads the signed-in Mac's Mail.app accounts through Apple's scripting interface. Mail.app owns account configuration, local caching, remote sync, and message state.
+This integration is self-contained: its provider contract lives in this reference. It reads the signed-in Mac's Mail.app accounts through Apple's scripting interface. Mail.app owns account configuration, local caching, remote sync, and message state.
 
 Direct reads from Mail's private SQLite databases are intentionally excluded. Their schema and account mapping change across macOS releases and make account-boundary enforcement brittle. The bridge always starts from one exact allowed account, traverses only that account's mailbox tree, and never uses Mail's unified inbox, selected messages, message viewers, or smart mailboxes.
 

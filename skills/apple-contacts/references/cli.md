@@ -6,10 +6,6 @@ category: local
 
 # apple-contacts
 
-## Use When
-
-Use this tool when an agent needs Apple Contacts / AddressBook as the local source of truth for iCloud-synced contacts. The read CLI is for exhaustive local contact context. The write CLI is for safe Contacts.framework mutations.
-
 ## Entry Point
 
 - Read source databases: `apple-contacts read sources`
@@ -41,7 +37,7 @@ Read commands open AddressBook SQLite in read-only mode. Write commands use the 
 
 ## Provider
 
-This integration is self-contained: its provider contract lives here, in this README, not in a separate file or a shared folder. It treats the local macOS Contacts / AddressBook store as the source of truth.
+This integration is self-contained: its provider contract lives in this reference, not in a separate file or shared folder. It treats the local macOS Contacts / AddressBook store as the source of truth.
 
 The read CLI treats Apple's local AddressBook SQLite files as the source of truth for exhaustive local contact context. The write CLI mutates through Contacts.framework so macOS and iCloud Contacts own sync consistency. For group member removal, it verifies the Contacts.framework result and can fall back to Apple's legacy AddressBook.framework because `CNSaveRequest.removeMember` can report success without removing the member on this Mac.
 
