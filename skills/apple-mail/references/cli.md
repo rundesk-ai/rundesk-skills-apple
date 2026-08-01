@@ -21,7 +21,7 @@ category: local
 - Search sender and subject metadata: `apple-mail read search "invoice" --days 30`
 - Show one message: `apple-mail read show --account-id ACCOUNT_ID --mailbox INBOX --message-id MESSAGE_ID`
 - Verify draft/send access: `apple-mail write status`
-- Dry-run a draft: `apple-mail write draft --payload email.json`
+- Dry-run a draft, with optional local file attachments in the payload: `apple-mail write draft --payload email.json`
 - Save an approved draft: `apple-mail write draft --payload email.json --confirm ONE_TIME_TOKEN`
 - Dry-run a send: `apple-mail write send --payload email.json`
 - Send an approved email: `apple-mail write send --payload email.json --confirm ONE_TIME_TOKEN`
@@ -60,7 +60,9 @@ Direct reads from Mail's private SQLite databases are intentionally excluded. Th
 
 Read commands must not send, reply, forward, mark read, flag, move, delete, archive, download attachments, trigger new-mail checks, or change accounts or mailboxes. Message-list and search output includes only matched-message headers plus a whitespace-normalized body preview, 160 characters by default and capped at 500. Use `--preview-chars 0` to omit previews. The `show` command requires one exact `--account-id` before content is read. It retrieves one matching message body, 4,000 characters by default and capped at 20,000, plus useful headers and attachment metadata; it does not save attachment bytes.
 
-Draft creation and sending are dry-runs unless `--confirm ONE_TIME_TOKEN` is passed after the owner has explicitly approved the exact account/from address, recipients, subject, body, and whether the action is draft or send. A dry-run records an owner-only, 15-minute confirmation challenge tied to the hash of every one of those fields. Its token is consumed before Mail is invoked and cannot be replayed. Approval to create a draft is not approval to send it. The write tool does not support attachments, replies, forwarding, or bulk mail in v1.
+Draft creation and sending are dry-runs unless `--confirm ONE_TIME_TOKEN` is passed after the owner has explicitly approved the exact account/from address, recipients, subject, body, attachments, and whether the action is draft or send. A dry-run records an owner-only, 15-minute confirmation challenge tied to the hash of every one of those fields, including each attachment's resolved path, byte size, and content hash. Its token is consumed before Mail is invoked and cannot be replayed. Approval to create a draft is not approval to send it. The write tool does not support replies, forwarding, or bulk mail.
+
+Attachments are read from local files the owner names. Because a file's bytes are hashed into the confirmation challenge, replacing an attachment between the dry-run and the confirm invalidates the token instead of silently sending different content. Never attach a file the owner did not name.
 
 Every mailbox or message read requires a nonempty local allowlist. `--account-id` can narrow the configured allowlist but can never override it. If Mail recreates an account with a new ID, that account must be approved again.
 
@@ -103,12 +105,13 @@ Write commands accept an email object directly or under an `email` key:
     "cc": [],
     "bcc": [],
     "subject": "Example subject",
-    "body": "Example body"
+    "body": "Example body",
+    "attachments": ["/absolute/path/report.pdf"]
   }
 }
 ```
 
-The `from` address must belong to the exact allowed account. At least one recipient is required, and the body is capped at 100,000 characters. Dry-run first and review the printed sender, recipients, subject, body preview, body length, and body hash. Run with `--confirm` only after the owner approves that exact action:
+The `from` address must belong to the exact allowed account. At least one recipient is required, and the body is capped at 100,000 characters. `attachments` is optional and holds local file paths; `~` is expanded and symlinks are resolved before use. Each path must resolve to an existing regular file, at most 10 files are accepted, and no single file or total payload may exceed 25 MB. Dry-run first and review the printed sender, recipients, subject, body preview, body length, body hash, and one `attachment[N]=` line per file with its name, byte size, content hash, and resolved path. Run with `--confirm` only after the owner approves that exact action:
 
 ```bash
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write draft --payload email.json
@@ -161,5 +164,6 @@ Mailbox paths are exact paths returned by `mailboxes`; each segment is URL-encod
 - Account names, addresses, message metadata, bodies, and identifiers are private data. Do not commit live output, local allowlist contents, or generated caches.
 - Only the Python entry points are supported. The JXA bridge files remain privileged internal helpers and must never
   be invoked directly for mailbox reads, drafts, or sends.
-- Attachment metadata reports whether Mail says an attachment is downloaded, but v1 neither reads nor saves attachment bytes.
+- Attachment metadata on read reports whether Mail says an incoming attachment is downloaded, but reads never save attachment bytes. Outgoing attachments are a separate write-side feature.
+- Mail accepts an outgoing attachment path without checking it and does not expose the attachment list of an unsaved outgoing message, so the existence, regular-file, size, and hash checks in `apple-mail-write.py` are the only guard. Mail decides where each file lands in the message, so attachment order is not preserved.
 - A send timeout or malformed automation response is indeterminate: check Sent and Outbox before approving a retry. For draft failures, check Drafts first.

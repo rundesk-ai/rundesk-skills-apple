@@ -41,6 +41,10 @@ APPROVAL_TTL_SECONDS = 15 * 60
 MAX_BODY_LENGTH = 100_000
 MAX_RECIPIENTS = 100
 MAX_SUBJECT_LENGTH = 500
+MAX_ATTACHMENTS = 10
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024
+ATTACHMENT_READ_CHUNK = 1024 * 1024
 
 
 def run_write_bridge(operation: str, payload: dict[str, Any]) -> Any:
@@ -126,6 +130,57 @@ def address_list(payload: dict[str, Any], key: str) -> list[str]:
     return [email_address(value, key) for value in values]
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(ATTACHMENT_READ_CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def attachment_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    values = payload.get("attachments", [])
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise AppleMailError("attachments must be a list of local file paths.")
+    if len(values) > MAX_ATTACHMENTS:
+        raise AppleMailError(f"Email payload supports at most {MAX_ATTACHMENTS} attachments.")
+    resolved: list[dict[str, Any]] = []
+    total = 0
+    for value in values:
+        candidate = value.strip() if isinstance(value, str) else ""
+        if not candidate:
+            raise AppleMailError("Each attachment must be a nonempty local file path string.")
+        if any(ord(char) < 32 or ord(char) == 127 for char in candidate):
+            raise AppleMailError("Attachment paths must not contain control characters.")
+        try:
+            path = Path(candidate).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise AppleMailError(f"Attachment file does not exist: {candidate}: {exc}") from exc
+        if not path.is_file():
+            raise AppleMailError(f"Attachment is not a regular file: {path}")
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise AppleMailError(f"Unable to read attachment: {path}: {exc}") from exc
+        if size > MAX_ATTACHMENT_BYTES:
+            raise AppleMailError(
+                f"Attachment exceeds the {MAX_ATTACHMENT_BYTES}-byte limit: {path} is {size} bytes."
+            )
+        total += size
+        if total > MAX_ATTACHMENT_TOTAL_BYTES:
+            raise AppleMailError(
+                f"Attachments exceed the {MAX_ATTACHMENT_TOTAL_BYTES}-byte total limit."
+            )
+        try:
+            digest = file_sha256(path)
+        except OSError as exc:
+            raise AppleMailError(f"Unable to read attachment: {path}: {exc}") from exc
+        resolved.append({"path": str(path), "name": path.name, "bytes": size, "sha256": digest})
+    return resolved
+
+
 def normalize_payload(raw: dict[str, Any], config_path: str) -> dict[str, Any]:
     account_id = str(raw.get("account_id") or "").strip()
     if not account_id:
@@ -182,6 +237,7 @@ def normalize_payload(raw: dict[str, Any], config_path: str) -> dict[str, Any]:
         "bcc": bcc,
         "subject": subject,
         "body": body,
+        "attachments": attachment_list(raw),
     }
 
 
@@ -195,6 +251,10 @@ def action_sha256(operation: str, message: dict[str, Any]) -> str:
         "bcc": message["bcc"],
         "subject": message["subject"],
         "body": message["body"],
+        "attachments": [
+            {"path": item["path"], "bytes": item["bytes"], "sha256": item["sha256"]}
+            for item in message.get("attachments", [])
+        ],
     }
     canonical = json.dumps(exact, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -313,6 +373,7 @@ def consume_confirmation(token: str, action_hash: str, store_path: Path) -> None
 
 def action_payload(operation: str, message: dict[str, Any], confirmed: bool) -> dict[str, Any]:
     body = message["body"]
+    attachments = message.get("attachments", [])
     return {
         "schema_version": SCHEMA_VERSION,
         "operation": operation,
@@ -328,6 +389,9 @@ def action_payload(operation: str, message: dict[str, Any], confirmed: bool) -> 
         "body_preview": truncate(body, 240),
         "body_length": len(body),
         "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "attachments": [dict(item) for item in attachments],
+        "attachment_count": len(attachments),
+        "attachment_bytes": sum(item["bytes"] for item in attachments),
         "action_sha256": action_sha256(operation, message),
     }
 
@@ -342,8 +406,14 @@ def print_action(payload: dict[str, Any]) -> None:
         f"{prefix} | account={text(payload['account_name'])} | account_id={payload['account_id']} | "
         f"from={payload['from']} | to={','.join(payload['to']) or '-'} | cc={','.join(payload['cc']) or '-'} | "
         f"bcc={','.join(payload['bcc']) or '-'} | subject={payload['subject']} | "
-        f"body_length={payload['body_length']} | body_sha256={payload['body_sha256']}"
+        f"body_length={payload['body_length']} | body_sha256={payload['body_sha256']} | "
+        f"attachments={payload['attachment_count']} | attachment_bytes={payload['attachment_bytes']}"
     )
+    for index, item in enumerate(payload["attachments"]):
+        print(
+            f"attachment[{index}]={text(item['name'])} | bytes={item['bytes']} | "
+            f"sha256={item['sha256']} | path={text(item['path'])}"
+        )
     if payload["dry_run"]:
         print(f"body_preview={payload['body_preview']}")
         print(f"action_sha256={payload['action_sha256']}")
@@ -375,8 +445,14 @@ def command_action(args):
             key: message[key]
             for key in ("account_id", "from", "to", "cc", "bcc", "subject", "body")
         }
+        bridge_payload["attachments"] = [item["path"] for item in message["attachments"]]
         result = run_write_bridge(args.command, bridge_payload)
-        if not isinstance(result, dict) or result.get("status") != "ok" or result.get("operation") != args.command:
+        if (
+            not isinstance(result, dict)
+            or result.get("status") != "ok"
+            or result.get("operation") != args.command
+            or result.get("attachments") != len(message["attachments"])
+        ):
             raise AppleMailError("Mail.app did not return a valid success confirmation for this action.")
     payload = action_payload(args.command, message, bool(args.confirm))
     if not args.confirm:
