@@ -7,6 +7,17 @@ function addRecipients(mail, message, values, kind) {
   values.forEach((address) => collection.push(constructor({address: address})));
 }
 
+/* Attachments belong to the message content element. Mail silently ignores a push onto the
+   message's own attachments collection after the first file, so every file goes through
+   content.attachments one at a time. */
+function addAttachments(mail, message, values) {
+  values.forEach((candidate) => {
+    const file = stringValue(candidate);
+    if (file.charAt(0) !== "/") throw new Error("Attachment paths must be absolute local file paths");
+    message.content.attachments.push(mail.Attachment({fileName: file}));
+  });
+}
+
 function stringValue(value) {
   try { return String(value === null || value === undefined ? "" : value); } catch (_) { return ""; }
 }
@@ -39,20 +50,24 @@ function compose(mail, operation, payload) {
     content: payload.body,
     visible: false,
   });
+  const attachments = payload.attachments || [];
   let inserted = false;
   try {
+    /* Mail exposes an outgoing message's recipient and attachment collections only after it is
+       inserted, so insert first and populate afterwards. */
+    mail.outgoingMessages.push(message);
+    inserted = true;
     addRecipients(mail, message, payload.to || [], "to");
     addRecipients(mail, message, payload.cc || [], "cc");
     addRecipients(mail, message, payload.bcc || [], "bcc");
-    mail.outgoingMessages.push(message);
-    inserted = true;
+    addAttachments(mail, message, attachments);
     if (operation === "draft") {
       message.save();
-      return {status: "ok", operation: "draft"};
+      return {status: "ok", operation: "draft", attachments: attachments.length};
     }
     const sent = Boolean(message.send());
     if (!sent) throw new Error("Mail.app did not confirm the send request");
-    return {status: "ok", operation: "send"};
+    return {status: "ok", operation: "send", attachments: attachments.length};
   } catch (error) {
     if (inserted) {
       try {
@@ -69,20 +84,37 @@ function fakeMail(payload, scenario, events) {
   function account(record) {
     return {id: function () { return record.id; }, emailAddresses: function () { return record.email_addresses; }};
   }
+  function collection(name) {
+    const items = [];
+    return {
+      items: items,
+      push: function (item) {
+        events.push(name);
+        if (scenario === name + "-fails") throw new Error("synthetic " + name + " failure");
+        items.push(item);
+      },
+    };
+  }
   return {
     accounts: function () { return (payload.synthetic_accounts || []).map(account); },
     ToRecipient: function (record) { return record; },
     CcRecipient: function (record) { return record; },
     BccRecipient: function (record) { return record; },
+    Attachment: function (record) { return record; },
     OutgoingMessage: function (record) {
-      record.toRecipients = [];
-      record.ccRecipients = [];
-      record.bccRecipients = [];
       record.save = function () { events.push("save"); if (scenario === "save-fails") throw new Error("synthetic save failure"); };
       record.send = function () { events.push("send"); return scenario !== "send-fails"; };
       return record;
     },
-    outgoingMessages: {push: function () { events.push("push"); }},
+    /* Mirrors Mail: recipient and content attachment collections exist only once the message is
+       inserted, and attachments hang off the content element rather than the message. */
+    outgoingMessages: {push: function (record) {
+      events.push("push");
+      record.toRecipients = collection("recipient");
+      record.ccRecipients = collection("recipient");
+      record.bccRecipients = collection("recipient");
+      record.content = {attachments: collection("attach")};
+    }},
     delete: function () { events.push("delete"); },
   };
 }

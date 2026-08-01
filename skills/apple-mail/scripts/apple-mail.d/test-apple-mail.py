@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -568,7 +569,7 @@ class AppleMailTest(unittest.TestCase):
 
                 def fake_bridge(action, payload):
                     calls.append((action, payload))
-                    return {"status": "ok", "operation": action}
+                    return {"status": "ok", "operation": action, "attachments": len(payload["attachments"])}
 
                 with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
                     message = self.write_module.normalize_payload(
@@ -600,6 +601,7 @@ class AppleMailTest(unittest.TestCase):
                 self.assertEqual(calls[0][1]["account_id"], "account-allowed")
                 self.assertEqual(calls[0][1]["from"], "allowed@example.test")
                 self.assertEqual(calls[0][1]["to"], ["recipient@example.test"])
+                self.assertEqual(calls[0][1]["attachments"], [])
 
     def test_write_rejects_sender_not_on_selected_account(self):
         self.allow_account()
@@ -681,7 +683,14 @@ class AppleMailTest(unittest.TestCase):
     def test_confirmed_action_rejects_invalid_bridge_success(self):
         self.allow_account()
         payload_path = self.payload_path()
-        for response in ({}, {"status": "ok", "operation": "draft"}, ["ok"], {"status": "error", "operation": "send"}):
+        for response in (
+            {},
+            {"status": "ok", "operation": "draft"},
+            ["ok"],
+            {"status": "error", "operation": "send"},
+            {"status": "ok", "operation": "send"},
+            {"status": "ok", "operation": "send", "attachments": 1},
+        ):
             with self.subTest(response=response):
                 with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
                     message = self.write_module.normalize_payload(
@@ -722,7 +731,7 @@ class AppleMailTest(unittest.TestCase):
             token, _ = self.write_module.issue_confirmation(
                 action_hash, self.write_module.approval_store_for(str(self.config))
             )
-        bridge = Mock(return_value={"status": "ok", "operation": "send"})
+        bridge = Mock(return_value={"status": "ok", "operation": "send", "attachments": 0})
         command = [
             "--config",
             str(self.config),
@@ -745,6 +754,158 @@ class AppleMailTest(unittest.TestCase):
         ):
             self.assertEqual(self.write_module.main(command), 1)
         self.assertEqual(bridge.call_count, 1)
+
+    def attachment_file(self, name="report.txt", content="synthetic attachment"):
+        path = Path(self.tmp.name) / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_attachment_dry_run_lists_every_file_for_approval(self):
+        self.allow_account()
+        first = self.attachment_file("first.txt", "one")
+        second = self.attachment_file("second.txt", "two")
+        payload_path = self.payload_path(attachments=[str(first), str(second)])
+        output = io.StringIO()
+        with (
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(self.write_module, "run_write_bridge") as bridge,
+            redirect_stdout(output),
+        ):
+            rc = self.write_module.main(
+                ["--config", str(self.config), "draft", "--payload", str(payload_path)]
+            )
+        self.assertEqual(rc, 0)
+        bridge.assert_not_called()
+        printed = output.getvalue()
+        self.assertIn("attachments=2", printed)
+        self.assertIn("attachment_bytes=6", printed)
+        self.assertIn("attachment[0]=first.txt", printed)
+        self.assertIn("attachment[1]=second.txt", printed)
+        self.assertIn(f"path={second.resolve()}", printed)
+        self.assertIn(
+            "sha256=" + hashlib.sha256(b"one").hexdigest(),
+            printed,
+        )
+
+    def test_confirmed_action_passes_resolved_attachment_paths(self):
+        self.allow_account()
+        attachment = self.attachment_file()
+        link = Path(self.tmp.name) / "link-to-report.txt"
+        link.symlink_to(attachment)
+        payload_path = self.payload_path(attachments=[str(link)])
+        calls = []
+
+        def fake_bridge(action, payload):
+            calls.append((action, payload))
+            return {"status": "ok", "operation": action, "attachments": len(payload["attachments"])}
+
+        with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
+            message = self.write_module.normalize_payload(
+                self.write_module.load_payload(payload_path), str(self.config)
+            )
+            token, _ = self.write_module.issue_confirmation(
+                self.write_module.action_sha256("draft", message),
+                self.write_module.approval_store_for(str(self.config)),
+            )
+        with (
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(self.write_module, "run_write_bridge", side_effect=fake_bridge),
+            redirect_stdout(io.StringIO()),
+        ):
+            rc = self.write_module.main(
+                [
+                    "--config",
+                    str(self.config),
+                    "draft",
+                    "--payload",
+                    str(payload_path),
+                    "--confirm",
+                    token,
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls[0][1]["attachments"], [str(attachment.resolve())])
+
+    def test_confirmation_binds_attachment_contents(self):
+        self.allow_account()
+        attachment = self.attachment_file()
+        payload_path = self.payload_path(attachments=[str(attachment)])
+        with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
+            approved = self.write_module.normalize_payload(
+                self.write_module.load_payload(payload_path), str(self.config)
+            )
+            token, _ = self.write_module.issue_confirmation(
+                self.write_module.action_sha256("draft", approved),
+                self.write_module.approval_store_for(str(self.config)),
+            )
+        self.assertNotEqual(
+            self.write_module.action_sha256("draft", dict(approved, attachments=[])),
+            self.write_module.action_sha256("draft", approved),
+        )
+        attachment.write_text("swapped after approval", encoding="utf-8")
+        stderr = io.StringIO()
+        with (
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(self.write_module, "run_write_bridge") as bridge,
+            redirect_stderr(stderr),
+        ):
+            rc = self.write_module.main(
+                [
+                    "--config",
+                    str(self.config),
+                    "draft",
+                    "--payload",
+                    str(payload_path),
+                    "--confirm",
+                    token,
+                ]
+            )
+        self.assertEqual(rc, 1)
+        bridge.assert_not_called()
+        self.assertIn("belongs to another action", stderr.getvalue())
+
+    def test_attachment_payloads_fail_closed(self):
+        self.allow_account()
+        directory = Path(self.tmp.name) / "folder"
+        directory.mkdir()
+        oversize = Path(self.tmp.name) / "oversize.bin"
+        with oversize.open("wb") as handle:
+            handle.truncate(self.write_module.MAX_ATTACHMENT_BYTES + 1)
+        half = Path(self.tmp.name) / "half.bin"
+        with half.open("wb") as handle:
+            handle.truncate(self.write_module.MAX_ATTACHMENT_TOTAL_BYTES // 2 + 1)
+        readable = self.attachment_file()
+        cases = (
+            ("missing", [str(Path(self.tmp.name) / "absent.txt")], "does not exist"),
+            ("directory", [str(directory)], "not a regular file"),
+            ("not-a-list", str(readable), "must be a list"),
+            ("blank", [" "], "nonempty local file path"),
+            ("not-a-string", [42], "nonempty local file path"),
+            ("control-character", [f"{readable.parent}/\nreport.txt"], "control characters"),
+            ("too-many", [str(readable)] * (self.write_module.MAX_ATTACHMENTS + 1), "at most"),
+            ("oversize", [str(oversize)], "byte limit"),
+            ("total-oversize", [str(half), str(half)], "total limit"),
+        )
+        for label, attachments, expected in cases:
+            with self.subTest(case=label):
+                stderr = io.StringIO()
+                with (
+                    patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+                    patch.object(self.write_module, "run_write_bridge") as bridge,
+                    redirect_stderr(stderr),
+                ):
+                    rc = self.write_module.main(
+                        [
+                            "--config",
+                            str(self.config),
+                            "draft",
+                            "--payload",
+                            str(self.payload_path(attachments=attachments)),
+                        ]
+                    )
+                self.assertEqual(rc, 1)
+                bridge.assert_not_called()
+                self.assertIn(expected, stderr.getvalue())
 
     def test_write_rejects_subject_control_characters(self):
         self.allow_account()
@@ -934,7 +1095,7 @@ class AppleMailTest(unittest.TestCase):
         }
         failed = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
         self.assertIn("did not confirm", failed["error"])
-        self.assertEqual(failed["events"], ["push", "send", "delete"])
+        self.assertEqual(failed["events"], ["push", "recipient", "send", "delete"])
 
         payload["synthetic_accounts"].append(
             {"id": "account-other", "email_addresses": ["allowed@example.test"]}
@@ -957,7 +1118,36 @@ class AppleMailTest(unittest.TestCase):
         payload["test_scenario"] = "save-fails"
         failed_draft = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
         self.assertIn("synthetic save failure", failed_draft["error"])
-        self.assertEqual(failed_draft["events"], ["push", "save", "delete"])
+        self.assertEqual(failed_draft["events"], ["push", "recipient", "save", "delete"])
+
+    def test_write_bridge_attaches_after_insertion_and_cleans_failed_attachments(self):
+        payload = {
+            "account_id": "account-allowed",
+            "from": "allowed@example.test",
+            "to": ["recipient@example.test"],
+            "cc": [],
+            "bcc": [],
+            "subject": "Synthetic",
+            "body": "Body",
+            "attachments": ["/tmp/synthetic-one.txt", "/tmp/synthetic-two.txt"],
+            "synthetic_accounts": [{"id": "account-allowed", "email_addresses": ["allowed@example.test"]}],
+            "test_operation": "draft",
+            "test_scenario": "ok",
+        }
+        saved = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
+        self.assertEqual(saved["result"], {"status": "ok", "operation": "draft", "attachments": 2})
+        self.assertEqual(saved["events"], ["push", "recipient", "attach", "attach", "save"])
+
+        payload["test_scenario"] = "attach-fails"
+        failed = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
+        self.assertIn("synthetic attach failure", failed["error"])
+        self.assertEqual(failed["events"], ["push", "recipient", "attach", "delete"])
+
+        payload["test_scenario"] = "ok"
+        payload["attachments"] = ["relative/report.txt"]
+        relative = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
+        self.assertIn("absolute local file paths", relative["error"])
+        self.assertEqual(relative["events"], ["push", "recipient", "delete"])
 
 
 if __name__ == "__main__":
