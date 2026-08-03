@@ -163,7 +163,20 @@ Listing shows locators, status, both times, sender, recipients, subject, attachm
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due --json
 ```
 
-Wiring the timer is an owner decision and an owner action, because it grants unattended Mail delivery. Either register a launchd agent at `~/Library/LaunchAgents/ai.rundesk.apple-mail.run-due.plist` with `ProgramArguments` naming the absolute path of the `apple-mail` launcher plus `write` and `run-due`, a `StartInterval` matching the wanted resolution, and `RunAtLoad` so a sleeping Mac catches up on wake; or schedule the same command through Rundesk. The interval is the scheduling resolution: a 300-second interval means a send lands within five minutes of its time. Keep the interval well inside `--expire-after-minutes` or every entry expires unsent.
+A Rundesk schedule calls `run-due` on a clock, and it is an owner decision to add because it grants unattended Mail delivery:
+
+```bash
+rundesk schedules <agent> add apple-mail-outbox --when "*/5 * * * *" \
+  -- "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due
+```
+
+Everything after `--` is a program and its arguments, so the schedule starts no turn and asks no model. The launcher path is absolute: a gateway runs with almost no `PATH` and a bare name is refused.
+
+- **The cron interval is the delivery resolution.** `*/5` lands a send within five minutes of its time, and stays well inside `--expire-after-minutes`; an interval wider than that window expires every entry unsent.
+- **One schedule serves the machine.** The queue is a single file for the whole machine, so whichever agent's schedule fires delivers every agent's mail, and a second schedule delivers the same mail no faster — `run-due` claims entries under an exclusive lock. Name it for the outbox rather than for the agent.
+- **The agent named owns the schedule record, not the queue.** Removing that agent removes the schedule and leaves every pending entry undelivered, so read `write scheduled --pending` first.
+
+`rundesk schedules <agent>` lists it, and `rundesk schedules <agent> remove apple-mail-outbox` takes it away.
 
 The queue lives beside the account allowlist at `${XDG_CONFIG_HOME:-$HOME/.config}/rundesk/integrations/apple-mail/scheduled.json`, owner-only, atomically replaced, and lock-guarded, and `--schedule-store PATH` or `APPLE_MAIL_SCHEDULE_STORE` names an alternate file. It holds full message bodies and attachment paths until delivery, so it is private data and is never committed, copied, or printed wholesale.
 

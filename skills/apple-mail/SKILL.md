@@ -57,5 +57,24 @@ nothing:
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due --dry-run
 ```
 
-Nothing is delivered until the owner has wired a timer to `write run-due`. Confirm that
-wiring exists before telling anyone their mail is scheduled.
+A Rundesk schedule calls `write run-due`, and that is what delivers the queue. Check it
+before telling anyone their mail is scheduled:
+
+```bash
+rundesk schedules <agent> | grep run-due
+```
+
+No row means the queue is not being delivered. Propose this and let the owner approve it,
+because it grants unattended Mail delivery:
+
+```bash
+rundesk schedules <agent> add apple-mail-outbox --when "*/5 * * * *" \
+  -- "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due
+```
+
+Everything after `--` is a program, so the schedule starts no turn and asks no model. The
+launcher path is absolute, because a gateway runs with almost no `PATH`. The cron interval
+is the delivery resolution: `*/5` lands a send within five minutes of its time, and it
+stays well inside `--expire-after-minutes` or entries expire unsent. One schedule serves
+the machine — the queue is a single file, and `run-due` claims entries under an exclusive
+lock, so a second schedule delivers the same mail no faster.
