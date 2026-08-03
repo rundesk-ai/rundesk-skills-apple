@@ -1,6 +1,6 @@
 ---
 name: apple-mail
-description: Read Mail.app messages or safely draft and send allowlisted mail, with local file attachments, using the bundled CLI. Use for email, inboxes, drafts, attachments, local accounts, or any task mentioning Mail.app.
+description: Read Mail.app messages or safely draft, send, and schedule allowlisted mail, with local file attachments, using the bundled CLI. Use for email, inboxes, drafts, attachments, send later, scheduled or delayed sends, local accounts, or any task mentioning Mail.app.
 ---
 
 # Apple Mail
@@ -43,3 +43,19 @@ attachment's name, size, and hash for approval:
   "to": ["recipient@example.test"], "subject": "Example", "body": "Example",
   "attachments": ["/absolute/path/report.pdf"]}}
 ```
+
+Mail.app has no scriptable send-later, so a scheduled send is a hash-bound local queue
+entry that a `run-due` invocation delivers. Approving a schedule approves that exact
+message at that exact time; the queue is not a Mail draft and editing Mail changes
+nothing:
+
+```sh
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write schedule --payload email.json --at 2026-08-05T09:00:00-04:00
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write schedule --payload email.json --at 2026-08-05T09:00:00-04:00 --confirm <ONE_TIME_TOKEN>
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write scheduled --pending
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write cancel --id <SCHEDULE_ID>
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due --dry-run
+```
+
+Nothing is delivered until the owner has wired a timer to `write run-due`. Confirm that
+wiring exists before telling anyone their mail is scheduled.

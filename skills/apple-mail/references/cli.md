@@ -25,6 +25,13 @@ category: local
 - Save an approved draft: `apple-mail write draft --payload email.json --confirm ONE_TIME_TOKEN`
 - Dry-run a send: `apple-mail write send --payload email.json`
 - Send an approved email: `apple-mail write send --payload email.json --confirm ONE_TIME_TOKEN`
+- Dry-run a later send: `apple-mail write schedule --payload email.json --at 2026-08-05T09:00:00-04:00`
+- Queue an approved later send: `apple-mail write schedule --payload email.json --at 2026-08-05T09:00:00-04:00 --confirm ONE_TIME_TOKEN`
+- List the queue: `apple-mail write scheduled --pending`
+- Dry-run a cancellation: `apple-mail write cancel --id SCHEDULE_ID`
+- Cancel an approved queue entry: `apple-mail write cancel --id SCHEDULE_ID --confirm ONE_TIME_TOKEN`
+- Report what a timer would deliver now: `apple-mail write run-due --dry-run`
+- Deliver every due queue entry: `apple-mail write run-due`
 
 The same-name dispatcher also works:
 
@@ -49,6 +56,7 @@ after approval of the exact IDs.
 - Run `apple-mail setup status` as a live setup smoke test.
 - After at least one account is allowed, run `apple-mail read status` and `apple-mail read unread --limit 5` as live read smoke tests.
 - Run `apple-mail write status` as a live non-mutating allowed-sender validation smoke test.
+- Run `apple-mail write scheduled` and `apple-mail write run-due --dry-run` as live non-mutating queue smoke tests.
 
 ## Provider
 
@@ -60,7 +68,9 @@ Direct reads from Mail's private SQLite databases are intentionally excluded. Th
 
 Read commands must not send, reply, forward, mark read, flag, move, delete, archive, download attachments, trigger new-mail checks, or change accounts or mailboxes. Message-list and search output includes only matched-message headers plus a whitespace-normalized body preview, 160 characters by default and capped at 500. Use `--preview-chars 0` to omit previews. The `show` command requires one exact `--account-id` before content is read. It retrieves one matching message body, 4,000 characters by default and capped at 20,000, plus useful headers and attachment metadata; it does not save attachment bytes.
 
-Draft creation and sending are dry-runs unless `--confirm ONE_TIME_TOKEN` is passed after the owner has explicitly approved the exact account/from address, recipients, subject, body, attachments, and whether the action is draft or send. A dry-run records an owner-only, 15-minute confirmation challenge tied to the hash of every one of those fields, including each attachment's resolved path, byte size, and content hash. Its token is consumed before Mail is invoked and cannot be replayed. Approval to create a draft is not approval to send it. The write tool does not support replies, forwarding, or bulk mail.
+Draft creation, sending, scheduling, and cancelling a scheduled send are dry-runs unless `--confirm ONE_TIME_TOKEN` is passed after the owner has explicitly approved the exact account/from address, recipients, subject, body, attachments, and whether the action is draft, send, or schedule. A dry-run records an owner-only, 15-minute confirmation challenge tied to the hash of every one of those fields, including each attachment's resolved path, byte size, and content hash; a schedule additionally binds the exact send time and expiry window, so moving the time invalidates the approval. Its token is consumed before Mail or the queue is touched and cannot be replayed. Approval to create a draft is not approval to send it, and approval to send now is not approval to schedule. The write tool does not support replies, forwarding, or bulk mail.
+
+`run-due` is the one write command that acts without `--confirm`, because it must run unattended from a timer. Its authority comes entirely from the queue: every entry was already confirmed by a one-time token and carries the approval hash of that exact message and time, which is recomputed and compared before Mail is invoked. An entry whose stored message, attachment bytes, account allowance, or sender mapping changed after approval is failed, never sent. `run-due --dry-run` reports what a timer would deliver without claiming or sending anything.
 
 Attachments are read from local files the owner names. Because a file's bytes are hashed into the confirmation challenge, replacing an attachment between the dry-run and the confirm invalidates the token instead of silently sending different content. Never attach a file the owner did not name.
 
@@ -121,6 +131,42 @@ The `from` address must belong to the exact allowed account. At least one recipi
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write send --payload email.json --confirm ONE_TIME_TOKEN
 ```
 
+### Scheduled Send Workflow
+
+Mail.app's own send-later is a user-interface feature. Its scripting dictionary exposes no deferred send date: an `outgoing message` carries only sender, subject, content, visibility, signature, and id, and responds only to `save`, `close`, and `send`. A scheduled send here is therefore a local queue entry plus a runner, not a Mail feature, and a queued message is not a Mail draft — it never appears in Drafts and editing Mail does not change what will be sent.
+
+`schedule` takes the same payload as `draft` and `send` plus `--at`, and follows the same dry-run and one-time token flow:
+
+```bash
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write schedule --payload email.json --at 2026-08-05T09:00:00-04:00
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write schedule --payload email.json --at 2026-08-05T09:00:00-04:00 --confirm ONE_TIME_TOKEN
+```
+
+`--at` is ISO 8601. A value without a UTC offset is read in the machine's local time zone; `Z` and explicit offsets are accepted. The time must be in the future and within 365 days. The dry-run prints the resolved time in both UTC and local time so the owner approves an unambiguous instant. `--expire-after-minutes` defaults to 1,440 and is capped at 43,200: a send more than that many minutes overdue when the runner finally fires is marked `expired` rather than delivered, so a sleeping Mac never sends yesterday's message today.
+
+Inspect and cancel through the printed schedule id:
+
+```bash
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write scheduled
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write scheduled --pending --json
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write cancel --id SCHEDULE_ID
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write cancel --id SCHEDULE_ID --confirm ONE_TIME_TOKEN
+```
+
+Listing shows locators, status, both times, sender, recipients, subject, attachment count, and any error; it never prints the body. An entry moves `pending` to `sending` to exactly one of `sent`, `failed`, `expired`, or `cancelled`, and only `pending` entries can be cancelled. Terminal entries are retained for seven days as an audit trail, then pruned. At most 200 entries may be pending or in flight at once, and one `run-due` invocation delivers at most 25.
+
+`run-due` is what actually delivers, and nothing is delivered until the owner wires it to a timer. It claims due entries under a lock before invoking Mail, so a concurrent invocation cannot double-send, and it never retries on its own: an entry left `sending` by a crash or a killed process is reported as `indeterminate` and left for the owner to resolve against Sent and Outbox.
+
+```bash
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due --dry-run
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due
+"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due --json
+```
+
+Wiring the timer is an owner decision and an owner action, because it grants unattended Mail delivery. Either register a launchd agent at `~/Library/LaunchAgents/ai.rundesk.apple-mail.run-due.plist` with `ProgramArguments` naming the absolute path of the `apple-mail` launcher plus `write` and `run-due`, a `StartInterval` matching the wanted resolution, and `RunAtLoad` so a sleeping Mac catches up on wake; or schedule the same command through Rundesk. The interval is the scheduling resolution: a 300-second interval means a send lands within five minutes of its time. Keep the interval well inside `--expire-after-minutes` or every entry expires unsent.
+
+The queue lives beside the account allowlist at `${XDG_CONFIG_HOME:-$HOME/.config}/rundesk/integrations/apple-mail/scheduled.json`, owner-only, atomically replaced, and lock-guarded, and `--schedule-store PATH` or `APPLE_MAIL_SCHEDULE_STORE` names an alternate file. It holds full message bodies and attachment paths until delivery, so it is private data and is never committed, copied, or printed wholesale.
+
 ### Read Workflow
 
 Use compact one-line text by default. Each row includes timestamp, account name and stable account ID, mailbox, message ID, unread state, sender and recipient addresses, subject, and a short body preview. The `account_id`, `mailbox`, and `id` values round-trip directly into `show`:
@@ -167,3 +213,5 @@ Mailbox paths are exact paths returned by `mailboxes`; each segment is URL-encod
 - Attachment metadata on read reports whether Mail says an incoming attachment is downloaded, but reads never save attachment bytes. Outgoing attachments are a separate write-side feature.
 - Mail accepts an outgoing attachment path without checking it and does not expose the attachment list of an unsaved outgoing message, so the existence, regular-file, size, and hash checks in `apple-mail-write.py` are the only guard. Mail decides where each file lands in the message, so attachment order is not preserved.
 - A send timeout or malformed automation response is indeterminate: check Sent and Outbox before approving a retry. For draft failures, check Drafts first.
+- A scheduled send is only as reliable as its timer, and an unwired queue delivers nothing. Confirm `run-due` is wired before reporting mail as scheduled, and read `write scheduled` rather than assuming a queued entry was delivered.
+- A scheduled entry stores the attachment path, not the bytes. Moving, editing, or deleting the file after approval fails that entry instead of sending different content than was approved.
