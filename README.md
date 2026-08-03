@@ -28,7 +28,7 @@ Removal requires `--yes` and is refused while any Apple skill is granted.
 
 - `apple-calendar` — EventKit reads and guarded event mutations.
 - `apple-contacts` — read-only AddressBook access and guarded Contacts.framework writes.
-- `apple-mail` — allowlisted Mail.app reads, drafts, and guarded sends.
+- `apple-mail` — allowlisted Mail.app reads, drafts, and guarded immediate or scheduled sends.
 - `apple-messages` — read-only local message history and guarded one-to-one sends.
 
 These integrations use macOS's system Python and frameworks. They do not create a virtual

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -922,6 +923,363 @@ class AppleMailTest(unittest.TestCase):
             )
         self.assertEqual(rc, 1)
         self.assertIn("control characters", stderr.getvalue())
+
+    SCHEDULE_NOW = 1_800_000_000
+
+    def at_offset(self, seconds):
+        return datetime.fromtimestamp(self.SCHEDULE_NOW + seconds, tz=timezone.utc).isoformat()
+
+    def schedule_store_path(self):
+        return self.write_module.schedule_store_for(str(self.config))
+
+    def stored_items(self):
+        return self.write_module.read_scheduled(self.schedule_store_path())
+
+    def replace_stored(self, items):
+        self.write_module.write_scheduled(self.schedule_store_path(), items)
+
+    def schedule_command(self, at, expire, payload_path):
+        return [
+            "--config", str(self.config), "schedule",
+            "--payload", str(payload_path), "--at", at,
+            "--expire-after-minutes", str(expire), "--json",
+        ]
+
+    def schedule_token(self, at, expire, payload_path):
+        with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
+            message = self.write_module.normalize_payload(
+                self.write_module.load_payload(payload_path), str(self.config)
+            )
+            schedule = {
+                "send_at": self.write_module.parse_send_at(at),
+                "expire_after_minutes": expire,
+            }
+            token, _ = self.write_module.issue_confirmation(
+                self.write_module.action_sha256("schedule", message, schedule),
+                self.write_module.approval_store_for(str(self.config)),
+            )
+        return token
+
+    def enqueue(self, at, expire=1440, payload_path=None, now=None):
+        payload_path = payload_path or self.payload_path()
+        token = self.schedule_token(at, expire, payload_path)
+        output = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=now or self.SCHEDULE_NOW),
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(self.write_module, "run_write_bridge") as bridge,
+            redirect_stdout(output),
+        ):
+            rc = self.write_module.main(
+                self.schedule_command(at, expire, payload_path) + ["--confirm", token]
+            )
+        self.assertEqual(rc, 0)
+        bridge.assert_not_called()
+        return json.loads(output.getvalue())
+
+    def run_due(self, now, bridge=None, extra=()):
+        bridge = bridge or Mock(return_value={"status": "ok", "operation": "send", "attachments": 0})
+        output = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=now),
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(self.write_module, "run_write_bridge", bridge),
+            redirect_stdout(output),
+        ):
+            rc = self.write_module.main(["--config", str(self.config), "run-due", "--json", *extra])
+        self.assertEqual(rc, 0)
+        return json.loads(output.getvalue()), bridge
+
+    def test_schedule_is_dry_run_and_queues_nothing_until_confirmed(self):
+        self.allow_account()
+        at = self.at_offset(3600)
+        output = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(self.write_module, "run_write_bridge") as bridge,
+            redirect_stdout(output),
+        ):
+            rc = self.write_module.main(
+                ["--config", str(self.config), "schedule",
+                 "--payload", str(self.payload_path()), "--at", at]
+            )
+        self.assertEqual(rc, 0)
+        bridge.assert_not_called()
+        printed = output.getvalue()
+        self.assertIn("dry-run: would schedule Apple Mail send", printed)
+        self.assertIn(f"send_at={at}", printed)
+        self.assertIn("expire_after_minutes=1440", printed)
+        self.assertIn("confirmation_token=", printed)
+        self.assertEqual(self.stored_items(), [])
+
+    def test_confirmed_schedule_queues_without_sending_and_stays_owner_only(self):
+        self.allow_account()
+        payload = self.enqueue(self.at_offset(3600))
+        self.assertTrue(payload["schedule_id"].startswith("sch_"))
+        self.assertEqual(self.schedule_store_path().stat().st_mode & 0o777, 0o600)
+        items = self.stored_items()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "pending")
+        self.assertEqual(items[0]["send_at"], self.SCHEDULE_NOW + 3600)
+        self.assertEqual(items[0]["message"]["body"], "Synthetic body")
+
+    def test_schedule_confirmation_binds_the_time_and_the_expiry_window(self):
+        self.allow_account()
+        payload_path = self.payload_path()
+        with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
+            message = self.write_module.normalize_payload(
+                self.write_module.load_payload(payload_path), str(self.config)
+            )
+        baseline = self.write_module.action_sha256(
+            "schedule", message, {"send_at": self.SCHEDULE_NOW + 3600, "expire_after_minutes": 1440}
+        )
+        self.assertNotEqual(
+            baseline,
+            self.write_module.action_sha256(
+                "schedule", message, {"send_at": self.SCHEDULE_NOW + 7200, "expire_after_minutes": 1440}
+            ),
+        )
+        self.assertNotEqual(
+            baseline,
+            self.write_module.action_sha256(
+                "schedule", message, {"send_at": self.SCHEDULE_NOW + 3600, "expire_after_minutes": 60}
+            ),
+        )
+        self.assertNotEqual(baseline, self.write_module.action_sha256("send", message))
+
+        token = self.schedule_token(self.at_offset(3600), 1440, payload_path)
+        stderr = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(self.write_module, "run_write_bridge") as bridge,
+            redirect_stderr(stderr),
+        ):
+            rc = self.write_module.main(
+                self.schedule_command(self.at_offset(7200), 1440, payload_path) + ["--confirm", token]
+            )
+        self.assertEqual(rc, 1)
+        bridge.assert_not_called()
+        self.assertIn("belongs to another action", stderr.getvalue())
+        self.assertEqual(self.stored_items(), [])
+
+    def test_schedule_rejects_unusable_times(self):
+        self.allow_account()
+        cases = (
+            (self.at_offset(-60), 1440, "must be in the future"),
+            (self.at_offset(400 * 24 * 3600), 1440, "within 365 days"),
+            ("next tuesday", 1440, "ISO 8601"),
+            (self.at_offset(3600), 0, "expire-after-minutes"),
+        )
+        for at, expire, expected in cases:
+            with self.subTest(at=at, expire=expire):
+                stderr = io.StringIO()
+                with (
+                    patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+                    patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+                    patch.object(self.write_module, "run_write_bridge") as bridge,
+                    redirect_stderr(stderr),
+                ):
+                    rc = self.write_module.main(
+                        self.schedule_command(at, expire, self.payload_path())
+                    )
+                self.assertEqual(rc, 1)
+                bridge.assert_not_called()
+                self.assertIn(expected, stderr.getvalue())
+        self.assertEqual(self.stored_items(), [])
+
+    def test_run_due_sends_only_at_the_scheduled_time_and_only_once(self):
+        self.allow_account()
+        identifier = self.enqueue(self.at_offset(3600))["schedule_id"]
+
+        early, bridge = self.run_due(self.SCHEDULE_NOW + 60)
+        self.assertEqual(early["sent"], 0)
+        bridge.assert_not_called()
+        self.assertEqual(self.stored_items()[0]["status"], "pending")
+
+        due, bridge = self.run_due(self.SCHEDULE_NOW + 3600)
+        self.assertEqual(due["sent"], 1)
+        self.assertEqual(bridge.call_count, 1)
+        operation, sent_payload = bridge.call_args[0]
+        self.assertEqual(operation, "send")
+        self.assertEqual(sent_payload["from"], "allowed@example.test")
+        self.assertEqual(sent_payload["to"], ["recipient@example.test"])
+        self.assertEqual(sent_payload["subject"], "Synthetic subject")
+        self.assertEqual(due["results"][0]["id"], identifier)
+
+        again, bridge = self.run_due(self.SCHEDULE_NOW + 7200)
+        self.assertEqual(again["sent"], 0)
+        bridge.assert_not_called()
+        self.assertEqual(self.stored_items()[0]["status"], "sent")
+
+    def test_run_due_expires_an_overdue_send_instead_of_sending_it(self):
+        self.allow_account()
+        self.enqueue(self.at_offset(3600), expire=60)
+        payload, bridge = self.run_due(self.SCHEDULE_NOW + 3600 + 61 * 60)
+        bridge.assert_not_called()
+        self.assertEqual(payload["expired"], 1)
+        self.assertEqual(self.stored_items()[0]["status"], "expired")
+        self.assertIn("Not sent within 60 minutes", self.stored_items()[0]["error"])
+
+    def test_run_due_dry_run_reports_without_claiming_or_sending(self):
+        self.allow_account()
+        self.enqueue(self.at_offset(3600))
+        payload, bridge = self.run_due(self.SCHEDULE_NOW + 3600, extra=["--dry-run"])
+        bridge.assert_not_called()
+        self.assertEqual(payload["due"], 1)
+        self.assertEqual(self.stored_items()[0]["status"], "pending")
+
+    def test_run_due_on_an_empty_queue_writes_nothing(self):
+        self.allow_account()
+        payload, bridge = self.run_due(self.SCHEDULE_NOW)
+        bridge.assert_not_called()
+        self.assertEqual(payload["sent"], 0)
+        self.assertFalse(self.schedule_store_path().exists())
+
+    def test_run_due_refuses_a_queue_entry_edited_after_approval(self):
+        self.allow_account()
+        self.enqueue(self.at_offset(3600))
+        items = self.stored_items()
+        items[0]["message"]["to"] = ["attacker@example.test"]
+        self.replace_stored(items)
+        payload, bridge = self.run_due(self.SCHEDULE_NOW + 3600)
+        bridge.assert_not_called()
+        self.assertEqual(payload["failed"], 1)
+        self.assertIn("no longer matches the approved action", payload["results"][0]["error"])
+        self.assertEqual(self.stored_items()[0]["status"], "failed")
+
+    def test_run_due_refuses_an_attachment_changed_after_approval(self):
+        self.allow_account()
+        attachment = self.attachment_file("scheduled.txt", "approved bytes")
+        self.enqueue(self.at_offset(3600), payload_path=self.payload_path(attachments=[str(attachment)]))
+        attachment.write_text("swapped after approval", encoding="utf-8")
+        payload, bridge = self.run_due(self.SCHEDULE_NOW + 3600)
+        bridge.assert_not_called()
+        self.assertEqual(payload["failed"], 1)
+        self.assertIn("no longer matches the approved action", payload["results"][0]["error"])
+
+    def test_run_due_fails_closed_when_the_account_allowance_is_revoked(self):
+        self.allow_account()
+        self.enqueue(self.at_offset(3600))
+        self.library.save_config(self.config, [])
+        payload, bridge = self.run_due(self.SCHEDULE_NOW + 3600)
+        bridge.assert_not_called()
+        self.assertEqual(payload["failed"], 1)
+        self.assertIn("No Apple Mail accounts are allowed", payload["results"][0]["error"])
+
+    def test_run_due_leaves_an_in_flight_send_alone(self):
+        self.allow_account()
+        self.enqueue(self.at_offset(3600))
+        items = self.stored_items()
+        items[0]["status"] = "sending"
+        items[0]["attempt_started_at"] = self.SCHEDULE_NOW + 3600
+        self.replace_stored(items)
+        payload, bridge = self.run_due(self.SCHEDULE_NOW + 7200)
+        bridge.assert_not_called()
+        self.assertEqual(payload["indeterminate"], 1)
+        self.assertEqual(self.stored_items()[0]["status"], "sending")
+
+    def test_cancel_is_dry_run_until_confirmed_and_then_nothing_sends(self):
+        self.allow_account()
+        identifier = self.enqueue(self.at_offset(3600))["schedule_id"]
+        output = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+            redirect_stdout(output),
+        ):
+            rc = self.write_module.main(["--config", str(self.config), "cancel", "--id", identifier])
+        self.assertEqual(rc, 0)
+        self.assertIn("dry-run: would cancel scheduled Apple Mail send", output.getvalue())
+        self.assertEqual(self.stored_items()[0]["status"], "pending")
+
+        token = output.getvalue().split("confirmation_token=")[1].splitlines()[0]
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+            redirect_stdout(io.StringIO()),
+        ):
+            rc = self.write_module.main(
+                ["--config", str(self.config), "cancel", "--id", identifier, "--confirm", token]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.stored_items()[0]["status"], "cancelled")
+
+        payload, bridge = self.run_due(self.SCHEDULE_NOW + 3600)
+        bridge.assert_not_called()
+        self.assertEqual(payload["sent"], 0)
+
+    def test_cancel_refuses_an_in_flight_or_finished_send(self):
+        self.allow_account()
+        identifier = self.enqueue(self.at_offset(3600))["schedule_id"]
+        for status, expected in (("sending", "cannot be cancelled"), ("sent", "no longer pending")):
+            with self.subTest(status=status):
+                items = self.stored_items()
+                items[0]["status"] = status
+                self.replace_stored(items)
+                stderr = io.StringIO()
+                with (
+                    patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+                    redirect_stderr(stderr),
+                ):
+                    rc = self.write_module.main(
+                        ["--config", str(self.config), "cancel", "--id", identifier, "--confirm", "0" * 64]
+                    )
+                self.assertEqual(rc, 1)
+                self.assertIn(expected, stderr.getvalue())
+
+    def test_scheduled_listing_shows_locators_without_the_body(self):
+        self.allow_account()
+        identifier = self.enqueue(self.at_offset(3600))["schedule_id"]
+        output = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+            redirect_stdout(output),
+        ):
+            rc = self.write_module.main(["--config", str(self.config), "scheduled", "--pending"])
+        self.assertEqual(rc, 0)
+        printed = output.getvalue()
+        self.assertIn(f"id={identifier}", printed)
+        self.assertIn("status=pending", printed)
+        self.assertIn("subject=Synthetic subject", printed)
+        self.assertNotIn("Synthetic body", printed)
+        self.assertIn("scheduled sends: 1", printed)
+
+    def test_duplicate_schedules_of_the_same_action_are_refused(self):
+        self.allow_account()
+        at = self.at_offset(3600)
+        payload_path = self.payload_path()
+        self.enqueue(at, payload_path=payload_path)
+        token = self.schedule_token(at, 1440, payload_path)
+        stderr = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            redirect_stderr(stderr),
+        ):
+            rc = self.write_module.main(
+                self.schedule_command(at, 1440, payload_path) + ["--confirm", token]
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("already scheduled", stderr.getvalue())
+        self.assertEqual(len(self.stored_items()), 1)
+
+    def test_schedule_rejects_a_sender_outside_the_allowlist(self):
+        self.allow_account()
+        stderr = io.StringIO()
+        with (
+            patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            redirect_stderr(stderr),
+        ):
+            rc = self.write_module.main(
+                self.schedule_command(
+                    self.at_offset(3600), 1440,
+                    self.payload_path(account_id="account-denied", **{"from": "denied@example.test"}),
+                )
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("not allowed", stderr.getvalue())
+        self.assertEqual(self.stored_items(), [])
 
     def run_jxa(self, script, *args):
         result = subprocess.run(

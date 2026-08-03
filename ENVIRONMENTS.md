@@ -24,9 +24,15 @@ Use an isolated directory per skill below:
 ${XDG_CONFIG_HOME:-$HOME/.config}/rundesk/integrations/<skill>/
 ```
 
-Apple Mail keeps its account allowlist and approval records there. Environment variables may
-name an alternate file when an owner already has managed configuration. Legacy files below
-`~/.config/workspace/` remain readable for migration but are never the new default.
+Apple Mail keeps its account allowlist, approval records, and scheduled-send queue there. The
+queue holds approved message bodies and attachment paths until delivery, so it is owner-only
+private data. Environment variables may name an alternate file when an owner already has managed
+configuration. Legacy files below `~/.config/workspace/` remain readable for migration but are
+never the new default.
+
+Delivering a scheduled send needs a timer the owner installs and owns. A skill never registers a
+launchd agent, a cron entry, or a Rundesk schedule on the owner's behalf; without one, queued mail
+stays queued.
 
 Catalog updates replace package code only. They never write configuration, permissions,
 credentials, local application databases, or durable approval records into the catalog tree.
