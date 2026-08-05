@@ -5,24 +5,33 @@ Each skill includes its command, implementation, offline tests, and operating gu
 portable package.
 
 ```sh
-rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple
+rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple            # says what it would do
 rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple --confirm
-rundesk skills grant <agent> apple-calendar
+rundesk skills grant <agent> rundesk-skills-apple/apple-calendar
 ```
 
-Installation makes all four skills available and grants none automatically.
-If a custom skill already uses any declared name, the complete catalog installation fails and
-leaves that custom package unchanged.
+Installation makes all four skills available and grants none automatically. A skill is addressed
+`<catalog>/<skill>`, so these names never clash with a skill of your own; `--as` stands a grant
+under another name when one agent would otherwise hold two of a name.
 
 ```sh
 rundesk skills catalogs
-rundesk skills update rundesk-skills-apple
-rundesk skills remove rundesk-skills-apple
+rundesk skills update rundesk-skills-apple --confirm
+rundesk skills remove rundesk-skills-apple --confirm
 ```
 
-Every update restores the repository's complete package files, including scripts and executable
-permissions. Configuration, permission grants, caches, and state remain outside those packages.
-Removal requires `--yes` and is refused while any Apple skill is granted.
+Every update restores the repository's complete package files, including each launcher and its
+executable permission; a launcher that would not run as it stands is reported by
+`rundesk skills doctor`, which names `chmod +x` as the fix. Configuration, permission grants,
+caches, and state remain outside those packages. Removal takes the whole catalog, revokes every
+grant on its skills, and names each agent that lost one.
+
+## Credentials
+
+None. These skills reach macOS through OS permissions and bundled bridges rather than API tokens,
+so no package here declares a `rundesk.json`. `rundesk skills configure` has nothing to ask for,
+`rundesk skills profiles` lists none, and `rundesk skills doctor` never reports one of these as
+blocked. What each does require is a macOS permission only the owner can grant.
 
 ## Included skills
 
