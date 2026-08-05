@@ -16,6 +16,10 @@ installation is required.
 Compiled bridges and caches are disposable. They never belong in the catalog, a skill package,
 or an agent's home.
 
+Every launcher standing directly in a package's `scripts/` is executable in this repository, and
+stays executable through an update. Rundesk treats one that is not as a fault against the skill,
+so a launcher whose mode was lost is a broken skill rather than a cosmetic difference.
+
 ## Configuration and persistent state
 
 Use an isolated directory per skill below:
@@ -33,6 +37,40 @@ never the new default.
 Delivering a scheduled send needs a timer the owner installs and owns. A skill never registers a
 launchd agent, a cron entry, or a Rundesk schedule on the owner's behalf; without one, queued mail
 stays queued.
+
+## Credentials
+
+None. These integrations reach macOS through OS permissions and bundled bridges, not API tokens, so
+no package declares a `rundesk.json` beside its `SKILL.md`. Rundesk therefore has nothing to prompt
+for, no profiles to list, and no reason to report one of these skills as blocked. An empty or
+invented declaration would be worse than none, because it would claim a requirement that does not
+exist and block a skill that works.
+
+Every environment variable these commands read is optional and has a default:
+
+- `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, and `TZ` are OS conventions, not this catalog's settings.
+- `APPLE_MAIL_CONFIG`, `APPLE_MAIL_APPROVAL_STORE`, and `APPLE_MAIL_SCHEDULE_STORE` name the
+  alternate files described above, for an owner who already has managed configuration.
+- `APPLE_CALENDAR_LIVE_TESTS`, `APPLE_CALENDAR_TEST_CALENDAR_ID`, and `APPLE_CONTACTS_LIVE_TESTS`
+  opt a live test in and are never read by a command.
+
+A declaration states what a skill **requires**. A value a script uses when it happens to be set is
+the script's own business, so none of the above belongs in one.
+
+Choosing between more than one account is Apple Mail's allowlist of Mail.app account IDs, kept in
+the configuration directory above and selected with `--account`. It is not an environment-variable
+convention, so rundesk's `<NAME>__<ACCOUNT>` profile form has nothing here to attach to, and no
+resolver reads it.
+
+If a later skill genuinely needs a value, declare it beside its `SKILL.md`:
+
+```json
+{"needs": {"SOME_TOKEN": "why it is needed, and where to get one"}}
+```
+
+Each name must match `^[A-Z][A-Z0-9_]*$` and must never contain `__`, which rundesk reads as the
+account suffix in `SOME_TOKEN__WORK`. Values are prompted for in the order written, so write them in
+the order somebody would supply them. `tests/test_catalog.py` enforces both rules.
 
 Catalog updates replace package code only. They never write configuration, permissions,
 credentials, local application databases, or durable approval records into the catalog tree.
