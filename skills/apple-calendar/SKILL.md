@@ -1,14 +1,13 @@
 ---
 name: apple-calendar
-description: Read or safely manage Apple Calendar events with the bundled CLI. Use for calendars, schedules, availability, meetings, EventKit, or Calendar.app.
+description: Use when the user asks to inspect availability, calendars, or events on this Mac, or to create, change, or delete a specific Apple Calendar event. It supplies bounded EventKit reads and guarded event writes. Do not use for RSVP responses or calendar-container changes; those are unsupported.
 ---
 
 # Apple Calendar
 
-Run the bundled CLI at `$RUNDESK_SKILLS/apple-calendar/scripts/apple-calendar`. It talks
-to the signed-in Mac's EventKit store through the stable **Rundesk Apple Calendar** helper;
-approve its macOS Calendar prompt when the owner is present. Read
-`references/cli.md` only for setup, payload, or validation details.
+Run `$RUNDESK_SKILLS/apple-calendar/scripts/apple-calendar`. Approve its macOS Calendar prompt only
+when the owner is present. Read `references/cli.md` only for permission setup, payload fields,
+recurring-event rules, or validation.
 
 Start with access checks:
 

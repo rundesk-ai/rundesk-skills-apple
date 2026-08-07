@@ -1,6 +1,6 @@
 ---
 name: apple-calendar
-description: Reading and safely managing local Apple Calendar / Calendar.app events.
+description: On-demand command, permission, payload, and validation details for Apple Calendar events.
 category: local
 ---
 
@@ -44,8 +44,6 @@ Event invitation response status is readable through `show` attendee/organizer f
 - Optional live mutation test: `APPLE_CALENDAR_LIVE_TESTS=1 APPLE_CALENDAR_TEST_CALENDAR_ID=<disposable-calendar-id> python3 $RUNDESK_SKILLS/apple-calendar/scripts/apple-calendar.d/test-apple-calendar.py`. This creates, updates, and deletes one synthetic event with a unique marker.
 
 ## Provider
-
-This integration is self-contained: its provider contract lives in this reference, not in a separate file or shared folder. It manages local macOS Calendar.app events through EventKit.
 
 EventKit is the source-of-truth path for both reads and writes. Calendar.app and the configured iCloud/CalDAV/Exchange accounts own sync consistency. Direct Calendar SQLite reads or writes are not part of this tool.
 

@@ -1,15 +1,14 @@
 ---
 name: apple-messages
-description: Read Apple Messages history or preview guarded one-to-one sends with the bundled CLI. Use for Messages.app, iMessage, SMS, RCS, chats, unread texts, or local message history.
+description: Use when the user asks to inspect local message history, find a text thread, or send a specific one-to-one message from this Mac. It supplies bounded Messages history reads and guarded Messages.app sends. Do not use for group sends, history mutation, or messages unavailable in the local store.
 ---
 
 # Apple Messages
 
-Run the bundled CLI at `$RUNDESK_SKILLS/apple-messages/scripts/apple-messages`. Reads open
-`~/Library/Messages/chat.db` read-only; sends use Messages.app AppleScript. Full Disk
-Access for the process serving the Rundesk agent and Automation permission may be required.
-Restart the agent after changing Full Disk Access. Read `references/cli.md` only for setup or
-validation details.
+Run `$RUNDESK_SKILLS/apple-messages/scripts/apple-messages`. Reads need Full Disk Access for the
+agent host; sends need Messages Automation permission. Restart the agent after changing Full Disk
+Access. Read `references/cli.md` only for permission setup, attachment access, transport behavior,
+or validation.
 
 Start with access checks:
 

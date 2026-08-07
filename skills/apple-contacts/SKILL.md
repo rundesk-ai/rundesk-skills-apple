@@ -1,15 +1,13 @@
 ---
 name: apple-contacts
-description: Read or safely manage Apple Contacts data with the bundled CLI. Use for contacts, AddressBook, phone numbers, people lookup, contact groups, or Contacts.app.
+description: Use when the user asks to find or update a person, contact detail, or contact group in macOS Contacts. It supplies bounded local reads and guarded exact-record Contacts mutations. Do not use for a CRM, organizational directory, or inferred identity lookup.
 ---
 
 # Apple Contacts
 
-Run the bundled CLI at `$RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts`. Reads use
-local AddressBook SQLite; writes use Contacts.framework through the stable **Rundesk Apple
-Contacts** helper. The agent host needs Full Disk Access for direct reads, and the helper needs
-Contacts approval for framework operations. Read `references/cli.md` only for setup, payload,
-or validation details.
+Run `$RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts`. Reads need Full Disk Access for the
+agent host; writes need macOS Contacts approval. Read `references/cli.md` only for permission setup,
+payload fields, group behavior, or validation.
 
 Start with access checks:
 

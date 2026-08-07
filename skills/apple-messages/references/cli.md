@@ -1,6 +1,6 @@
 ---
 name: apple-messages
-description: Reading local Apple Messages data and guarded one-to-one sends.
+description: On-demand command, permission, attachment-access, and validation details for local Messages history and one-to-one sends.
 category: local
 ---
 
@@ -38,8 +38,6 @@ Message rows with attachments include an exact `attachment_command=...` value, i
 - Run `apple-messages send status` as a live non-send AppleScript smoke test.
 
 ## Provider
-
-This integration is self-contained: its provider contract lives in this reference, not in a separate file or shared folder. It treats local macOS Messages data as the source of truth and sends one-to-one messages through Messages.app.
 
 The read CLI treats `~/Library/Messages/chat.db` as the local source of truth for Messages channel state. The send CLI uses Messages.app AppleScript so macOS and Messages own delivery, account selection, and iCloud consistency. Direct SQLite writes are forbidden.
 

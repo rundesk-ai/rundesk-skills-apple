@@ -1,6 +1,6 @@
 ---
 name: apple-contacts
-description: Reading and safely managing local Apple Contacts / AddressBook data.
+description: On-demand command, permission, payload, and validation details for local Apple Contacts.
 category: local
 ---
 
@@ -42,8 +42,6 @@ the member in place. Mutation commands are dry-runs unless `--confirm` is passed
 - Optional live mutation test: `APPLE_CONTACTS_LIVE_TESTS=1 python3 $RUNDESK_SKILLS/apple-contacts/scripts/apple-contacts.d/test-apple-contacts.py`. This creates, updates, groups, ungroups, and deletes one synthetic contact with a unique marker.
 
 ## Provider
-
-This integration is self-contained: its provider contract lives in this reference, not in a separate file or shared folder. It treats the local macOS Contacts / AddressBook store as the source of truth.
 
 The read CLI treats Apple's local AddressBook SQLite files as the source of truth for exhaustive local contact context. The write CLI mutates through Contacts.framework so macOS and iCloud Contacts own sync consistency. For group member removal, it verifies the Contacts.framework result and can fall back to Apple's legacy AddressBook.framework because `CNSaveRequest.removeMember` can report success without removing the member on this Mac.
 

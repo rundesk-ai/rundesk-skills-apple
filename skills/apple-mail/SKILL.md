@@ -1,6 +1,6 @@
 ---
 name: apple-mail
-description: Read Mail.app messages or safely draft, send, and schedule allowlisted mail, with local file attachments, using the bundled CLI. Use for email, inboxes, drafts, attachments, send later, scheduled or delayed sends, local accounts, or any task mentioning Mail.app.
+description: Use when the user asks to inspect Mail.app mail, prepare a draft, send approved email, or queue an approved message for later delivery from an allowed local account. It supplies bounded allowlisted reads and hash-bound guarded writes. Do not use for replies, forwarding, non-Mail providers, or unattended delivery unless the owner approves its timer.
 ---
 
 # Apple Mail
@@ -30,51 +30,12 @@ Bounded reads after accounts are allowed:
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" read show --account-id <ACCOUNT_ID> --mailbox <MAILBOX> --message-id <ID>
 ```
 
-Allowlist, draft, and send actions are dry-runs without `--confirm`. Draft/send confirm
-uses a one-time token from the dry-run. Never mark mail read, download attachments, or
-send without the owner approving the exact account, recipients, subject, body, and
-attachments.
+Allowlist, draft, send, schedule, and cancel actions are dry-runs without `--confirm`; mail writes
+use a one-time token bound to the reviewed action. Never mark mail read, download attachments, or
+write without the owner approving the exact account, recipients, subject, body, attachments, and
+delivery timing.
 
-Attach local files by adding absolute paths to the payload; the dry-run prints each
-attachment's name, size, and hash for approval:
-
-```json
-{"email": {"account_id": "ACCOUNT_ID", "from": "sender@example.test",
-  "to": ["recipient@example.test"], "subject": "Example", "body": "Example",
-  "attachments": ["/absolute/path/report.pdf"]}}
-```
-
-Mail.app has no scriptable send-later, so a scheduled send is a hash-bound local queue
-entry that a `run-due` invocation delivers. Approving a schedule approves that exact
-message at that exact time; the queue is not a Mail draft and editing Mail changes
-nothing:
-
-```sh
-"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write schedule --payload email.json --at 2026-08-05T09:00:00-04:00
-"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write schedule --payload email.json --at 2026-08-05T09:00:00-04:00 --confirm <ONE_TIME_TOKEN>
-"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write scheduled --pending
-"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write cancel --id <SCHEDULE_ID>
-"$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due --dry-run
-```
-
-A Rundesk schedule calls `write run-due`, and that is what delivers the queue. Check it
-before telling anyone their mail is scheduled:
-
-```bash
-rundesk schedules <agent> | grep run-due
-```
-
-No row means the queue is not being delivered. Propose this and let the owner approve it,
-because it grants unattended Mail delivery:
-
-```bash
-rundesk schedules <agent> add apple-mail-outbox --when "*/5 * * * *" \
-  -- "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due
-```
-
-Everything after `--` is a program, so the schedule starts no turn and asks no model. The
-launcher path is absolute, because a gateway runs with almost no `PATH`. The cron interval
-is the delivery resolution: `*/5` lands a send within five minutes of its time, and it
-stays well inside `--expire-after-minutes` or entries expire unsent. One schedule serves
-the machine — the queue is a single file, and `run-due` claims entries under an exclusive
-lock, so a second schedule delivers the same mail no faster.
+Read `references/cli.md` before attaching files or drafting, sending, scheduling, cancelling, or
+wiring scheduled delivery. A scheduled message is a hash-bound local queue entry, not a Mail draft,
+and delivers only through an owner-approved timer. Confirm both the pending entry and that timer
+before reporting mail as scheduled.

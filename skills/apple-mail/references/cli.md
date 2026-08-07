@@ -1,6 +1,6 @@
 ---
 name: apple-mail
-description: Reading Mail.app data and safely creating drafts or sending mail through an explicit local account allowlist.
+description: On-demand command, allowlist, confirmation, scheduled-delivery, and validation details for Apple Mail.
 category: local
 ---
 
@@ -60,7 +60,7 @@ after approval of the exact IDs.
 
 ## Provider
 
-This integration is self-contained: its provider contract lives in this reference. It reads the signed-in Mac's Mail.app accounts through Apple's scripting interface. Mail.app owns account configuration, local caching, remote sync, and message state.
+Mail.app owns account configuration, local caching, remote sync, and message state.
 
 Direct reads from Mail's private SQLite databases are intentionally excluded. Their schema and account mapping change across macOS releases and make account-boundary enforcement brittle. The bridge always starts from one exact allowed account, traverses only that account's mailbox tree, and never uses Mail's unified inbox, selected messages, message viewers, or smart mailboxes.
 
@@ -166,17 +166,20 @@ Listing shows locators, status, both times, sender, recipients, subject, attachm
 A Rundesk schedule calls `run-due` on a clock, and it is an owner decision to add because it grants unattended Mail delivery:
 
 ```bash
-rundesk schedules <agent> add apple-mail-outbox --when "*/5 * * * *" \
-  -- "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write run-due
+"$RUNDESK_COMMAND" schedules add "$RUNDESK_AGENT" apple-mail-outbox \
+  --when "*/5 * * * *" \
+  --run "'$RUNDESK_SKILLS/apple-mail/scripts/apple-mail' write run-due"
 ```
 
-Everything after `--` is a program and its arguments, so the schedule starts no turn and asks no model. The launcher path is absolute: a gateway runs with almost no `PATH` and a bare name is refused.
+`--run` takes the complete program and arguments as one string, starts no turn, and asks no model.
+The launcher path is absolute because a gateway runs with almost no `PATH` and refuses a bare name.
 
 - **The cron interval is the delivery resolution.** `*/5` lands a send within five minutes of its time, and stays well inside `--expire-after-minutes`; an interval wider than that window expires every entry unsent.
 - **One schedule serves the machine.** The queue is a single file for the whole machine, so whichever agent's schedule fires delivers every agent's mail, and a second schedule delivers the same mail no faster — `run-due` claims entries under an exclusive lock. Name it for the outbox rather than for the agent.
 - **The agent named owns the schedule record, not the queue.** Removing that agent removes the schedule and leaves every pending entry undelivered, so read `write scheduled --pending` first.
 
-`rundesk schedules <agent>` lists it, and `rundesk schedules <agent> remove apple-mail-outbox` takes it away.
+`"$RUNDESK_COMMAND" schedules list "$RUNDESK_AGENT"` lists it. After checking pending mail,
+`"$RUNDESK_COMMAND" schedules remove "$RUNDESK_AGENT" apple-mail-outbox` removes it.
 
 The queue lives beside the account allowlist at `${XDG_CONFIG_HOME:-$HOME/.config}/rundesk/integrations/apple-mail/scheduled.json`, owner-only, atomically replaced, and lock-guarded, and `--schedule-store PATH` or `APPLE_MAIL_SCHEDULE_STORE` names an alternate file. It holds full message bodies and attachment paths until delivery, so it is private data and is never committed, copied, or printed wholesale.
 
