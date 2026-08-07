@@ -16,13 +16,14 @@ under another name when one agent would otherwise hold two of a name.
 
 ```sh
 rundesk skills catalogs
-rundesk skills update rundesk-skills-apple             # preview
-rundesk skills update rundesk-skills-apple --confirm   # apply
-rundesk skills remove rundesk-skills-apple             # preview
-rundesk skills remove rundesk-skills-apple --confirm   # apply
+rundesk skills update rundesk-skills-apple
+rundesk skills update rundesk-skills-apple --confirm
+rundesk skills remove rundesk-skills-apple
+rundesk skills remove rundesk-skills-apple --confirm
 ```
 
-Every update restores the repository's complete package files, including each launcher and its
+The unconfirmed commands preview their exact changes; `--confirm` applies them. Every update
+restores the repository's complete package files, including each launcher and its
 executable permission; a launcher that would not run as it stands is reported by
 `rundesk skills doctor`, which names `chmod +x` as the fix. Configuration, permission grants,
 caches, and state remain outside those packages. Removal takes the whole catalog, revokes every
