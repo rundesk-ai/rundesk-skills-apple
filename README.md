@@ -16,8 +16,10 @@ under another name when one agent would otherwise hold two of a name.
 
 ```sh
 rundesk skills catalogs
-rundesk skills update rundesk-skills-apple --confirm
-rundesk skills remove rundesk-skills-apple --confirm
+rundesk skills update rundesk-skills-apple             # preview
+rundesk skills update rundesk-skills-apple --confirm   # apply
+rundesk skills remove rundesk-skills-apple             # preview
+rundesk skills remove rundesk-skills-apple --confirm   # apply
 ```
 
 Every update restores the repository's complete package files, including each launcher and its
@@ -29,9 +31,11 @@ grant on its skills, and names each agent that lost one.
 ## Credentials
 
 None. These skills reach macOS through OS permissions and bundled bridges rather than API tokens,
-so no package here declares a `rundesk.json`. `rundesk skills configure` has nothing to ask for,
-`rundesk skills profiles` lists none, and `rundesk skills doctor` never reports one of these as
-blocked. What each does require is a macOS permission only the owner can grant.
+so no package here declares a `rundesk.json`. `rundesk skills profiles
+rundesk-skills-apple/<skill>` reports that there are no profiles; `rundesk skills configure
+rundesk-skills-apple/<skill>` is refused because there is nothing to configure. `rundesk skills
+doctor [<agent>]` still checks that grants and scripts are usable. Each skill also requires macOS
+permissions only the owner can grant.
 
 ## Included skills
 
