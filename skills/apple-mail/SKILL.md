@@ -39,3 +39,9 @@ Read `references/cli.md` before attaching files or drafting, sending, scheduling
 wiring scheduled delivery. A scheduled message is a hash-bound local queue entry, not a Mail draft,
 and delivers only through an owner-approved timer. Confirm both the pending entry and that timer
 before reporting mail as scheduled.
+
+An attachment-bearing draft briefly opens Mail's native composer. Mail then owns the body styling
+and places each attachment after it. Accessibility permission is required to verify the From
+address and save/close that composer. These drafts temporarily support To recipients only; add Cc
+or Bcc in Mail. Attachment-bearing sends and schedules are temporarily refused; create the guarded
+draft, inspect it in Mail, and send it there.

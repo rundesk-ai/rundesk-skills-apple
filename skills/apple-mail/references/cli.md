@@ -20,10 +20,10 @@ category: local
 - Show unread inbox messages: `apple-mail read unread --limit 25`
 - Search sender and subject metadata: `apple-mail read search "invoice" --days 30`
 - Show one message: `apple-mail read show --account-id ACCOUNT_ID --mailbox INBOX --message-id MESSAGE_ID`
-- Verify draft/send access: `apple-mail write status`
+- Verify Mail Automation, allowed senders, and native-draft Accessibility access: `apple-mail write status`
 - Dry-run a draft, with optional local file attachments in the payload: `apple-mail write draft --payload email.json`
 - Save an approved draft: `apple-mail write draft --payload email.json --confirm ONE_TIME_TOKEN`
-- Dry-run a send: `apple-mail write send --payload email.json`
+- Dry-run a send without attachments: `apple-mail write send --payload email.json`
 - Send an approved email: `apple-mail write send --payload email.json --confirm ONE_TIME_TOKEN`
 - Dry-run a later send: `apple-mail write schedule --payload email.json --at 2026-08-05T09:00:00-04:00`
 - Queue an approved later send: `apple-mail write schedule --payload email.json --at 2026-08-05T09:00:00-04:00 --confirm ONE_TIME_TOKEN`
@@ -73,6 +73,14 @@ Draft creation, sending, scheduling, and cancelling a scheduled send are dry-run
 `run-due` is the one write command that acts without `--confirm`, because it must run unattended from a timer. Its authority comes entirely from the queue: every entry was already confirmed by a one-time token and carries the approval hash of that exact message and time, which is recomputed and compared before Mail is invoked. An entry whose stored message, attachment bytes, account allowance, or sender mapping changed after approval is failed, never sent. `run-due --dry-run` reports what a timer would deliver without claiming or sending anything.
 
 Attachments are read from local files the owner names. Because a file's bytes are hashed into the confirmation challenge, replacing an attachment between the dry-run and the confirm invalidates the token instead of silently sending different content. Never attach a file the owner did not name.
+
+Attachment-bearing drafts use Mail's visible native compose service so Mail owns the text styling
+and file placement. The invoking terminal or agent process needs Accessibility permission to verify
+the approved From address and save/close that composer. These
+drafts temporarily support To recipients only; add Cc or Bcc in Mail after saving. Attachment-bearing
+immediate and scheduled sends are temporarily refused; open the saved draft, verify it, and send it
+in Mail. Close any open composer or saved draft with the same exact subject before creating another
+attachment draft; exact-subject uniqueness prevents Accessibility from targeting the wrong window.
 
 Every mailbox or message read requires a nonempty local allowlist. `--account-id` can narrow the configured allowlist but can never override it. If Mail recreates an account with a new ID, that account must be approved again.
 
@@ -130,6 +138,9 @@ The `from` address must belong to the exact allowed account. At least one recipi
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write send --payload email.json
 "$RUNDESK_SKILLS/apple-mail/scripts/apple-mail" write send --payload email.json --confirm ONE_TIME_TOKEN
 ```
+
+The send commands above accept messages without attachments. For attachments, use `write draft`,
+inspect the native Mail draft, and send it from Mail.
 
 ### Scheduled Send Workflow
 
@@ -227,7 +238,8 @@ Mailbox paths are exact paths returned by `mailboxes`; each segment is URL-encod
 - Only the Python entry points are supported. The JXA bridge files remain privileged internal helpers and must never
   be invoked directly for mailbox reads, drafts, or sends.
 - Attachment metadata on read reports whether Mail says an incoming attachment is downloaded, but reads never save attachment bytes. Outgoing attachments are a separate write-side feature.
-- Mail accepts an outgoing attachment path without checking it and does not expose the attachment list of an unsaved outgoing message, so the existence, regular-file, size, and hash checks in `apple-mail-write.py` are the only guard. Mail decides where each file lands in the message, so attachment order is not preserved.
+- Mail's native compose service receives the body first and attachment file URLs afterward. The
+  Python guard still verifies every file's existence, type, size, and hash before that service opens.
 - A send timeout or malformed automation response is indeterminate: check Sent and Outbox before approving a retry. For draft failures, check Drafts first.
 - A scheduled send is only as reliable as its timer, and an unwired queue delivers nothing. Confirm `run-due` is wired before reporting mail as scheduled, and read `write scheduled` rather than assuming a queued entry was delivered.
 - A scheduled entry stores the attachment path, not the bytes. Moving, editing, or deleting the file after approval fails that entry instead of sending different content than was approved.

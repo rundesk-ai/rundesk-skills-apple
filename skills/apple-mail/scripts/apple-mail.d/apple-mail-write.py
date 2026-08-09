@@ -7,13 +7,18 @@ import argparse
 import fcntl
 import hashlib
 import json
+import mimetypes
 import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
-from email.utils import parseaddr
+from email import policy
+from email.message import EmailMessage
+from email.parser import BytesParser
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Any
 
@@ -100,18 +105,10 @@ def run_write_bridge(operation: str, payload: dict[str, Any]) -> Any:
         )
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
-        recovery = (
-            "Delivery may already have been initiated; check Sent and Outbox before approving a retry."
-            if operation == "send"
-            else "A partial draft may exist; check Drafts before approving a retry."
-        )
+        recovery = bridge_recovery(operation)
         raise AppleMailError(f"Mail.app {operation} failed or is indeterminate: {detail} {recovery}") from exc
     except subprocess.TimeoutExpired as exc:
-        recovery = (
-            "Delivery may already have been initiated; check Sent and Outbox before approving a retry."
-            if operation == "send"
-            else "A partial draft may exist; check Drafts before approving a retry."
-        )
+        recovery = bridge_recovery(operation)
         raise AppleMailError(
             f"Mail.app {operation} timed out after {AUTOMATION_TIMEOUT_SECONDS} seconds. {recovery}"
         ) from exc
@@ -120,12 +117,16 @@ def run_write_bridge(operation: str, payload: dict[str, Any]) -> Any:
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        recovery = (
-            "Delivery may already have been initiated; check Sent and Outbox before approving a retry."
-            if operation == "send"
-            else "A partial draft may exist; check Drafts before approving a retry."
-        )
+        recovery = bridge_recovery(operation)
         raise AppleMailError(f"Mail.app {operation} returned an indeterminate response. {recovery}") from exc
+
+
+def bridge_recovery(operation: str) -> str:
+    if operation == "send":
+        return "Delivery may already have been initiated; check Sent and Outbox before approving a retry."
+    if operation in ("draft", "draft-mime"):
+        return "A partial draft may exist; check Drafts before approving a retry."
+    return "Grant Accessibility to the invoking terminal or agent process in System Settings."
 
 
 def load_payload(path: str | Path) -> dict[str, Any]:
@@ -629,11 +630,32 @@ def finish_scheduled(store_path: Path, identifier: str, status: str, error: str,
 def bridge_payload_for(message: dict[str, Any]) -> dict[str, Any]:
     payload = {key: message[key] for key in ("account_id", "from", "to", "cc", "bcc", "subject", "body")}
     payload["attachments"] = [item["path"] for item in message.get("attachments", [])]
+    payload["attachment_metadata"] = [
+        {"name": item["name"], "bytes": item["bytes"]}
+        for item in message.get("attachments", [])
+    ]
     return payload
 
 
+def require_supported_attachment_operation(operation: str, message: dict[str, Any]) -> None:
+    if message.get("attachments") and operation != "draft":
+        raise AppleMailError(
+            "Attachment-bearing Apple Mail sends and schedules are temporarily unavailable. "
+            "Create a draft, verify it in Mail, and send it there."
+        )
+    if message.get("attachments") and (message.get("cc") or message.get("bcc")):
+        raise AppleMailError(
+            "Attachment-bearing native drafts temporarily support To recipients only; "
+            "add Cc or Bcc in Mail after the draft is saved."
+        )
+
+
 def send_now(message: dict[str, Any], operation: str) -> None:
-    result = run_write_bridge(operation, bridge_payload_for(message))
+    require_supported_attachment_operation(operation, message)
+    if operation == "draft" and message.get("attachments"):
+        result = create_standard_attachment_draft(message)
+    else:
+        result = run_write_bridge(operation, bridge_payload_for(message))
     if (
         not isinstance(result, dict)
         or result.get("status") != "ok"
@@ -641,6 +663,112 @@ def send_now(message: dict[str, Any], operation: str) -> None:
         or result.get("attachments") != len(message.get("attachments", []))
     ):
         raise AppleMailError("Mail.app did not return a valid success confirmation for this action.")
+    if operation == "draft" and message.get("attachments"):
+        verify_saved_attachment_source(message, result, require_standard_attachment=True)
+
+
+def standard_attachment_message(message: dict[str, Any]) -> EmailMessage:
+    draft = EmailMessage(policy=policy.SMTP)
+    draft["From"] = message["from"]
+    draft["To"] = ", ".join(message.get("to", []))
+    if message.get("cc"):
+        draft["Cc"] = ", ".join(message["cc"])
+    if message.get("bcc"):
+        draft["Bcc"] = ", ".join(message["bcc"])
+    draft["Subject"] = message["subject"]
+    draft.set_content(message["body"], charset="utf-8")
+    for item in message.get("attachments", []):
+        mime_type, _ = mimetypes.guess_type(item["name"])
+        maintype, subtype = (mime_type or "application/octet-stream").split("/", 1)
+        try:
+            content = Path(item["path"]).read_bytes()
+        except OSError as exc:
+            raise AppleMailError(f"Unable to read attachment: {item['path']}: {exc}") from exc
+        draft.add_attachment(
+            content,
+            maintype=maintype,
+            subtype=subtype,
+            filename=item["name"],
+            disposition="attachment",
+        )
+    return draft
+
+
+def create_standard_attachment_draft(message: dict[str, Any]) -> dict[str, Any]:
+    source = standard_attachment_message(message).as_bytes()
+    with tempfile.TemporaryDirectory(prefix="rundesk-apple-mail-") as directory:
+        path = Path(directory) / "approved-draft.eml"
+        path.write_bytes(source)
+        path.chmod(0o600)
+        payload = bridge_payload_for(message)
+        payload["account_name"] = message["account_name"]
+        payload["eml_path"] = str(path)
+        return run_write_bridge("draft-mime", payload)
+
+
+def normalized_source_body(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def verify_saved_attachment_source(
+    message: dict[str, Any], result: dict[str, Any], *, require_standard_attachment: bool = False
+) -> None:
+    source = result.get("saved_draft_source")
+    if not isinstance(source, str) or not source:
+        raise AppleMailError("Mail.app did not return the saved draft source for attachment verification.")
+    try:
+        parsed = BytesParser(policy=policy.default).parsebytes(source.encode("utf-8"))
+        actual = []
+        body_parts = []
+        for part in parsed.walk():
+            name = part.get_filename()
+            if name is None:
+                if not part.is_multipart() and part.get_content_type() == "text/plain":
+                    body_parts.append(normalized_source_body(part.get_content()))
+                continue
+            content = part.get_payload(decode=True)
+            if content is None:
+                raise ValueError(f"attachment {name!r} has no decodable payload")
+            actual.append(
+                {
+                    "name": name,
+                    "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "disposition": part.get_content_disposition(),
+                    "content_id": part.get("Content-ID"),
+                }
+            )
+    except (LookupError, TypeError, ValueError) as exc:
+        raise AppleMailError(f"Mail.app saved draft attachment verification failed: {exc}") from exc
+    expected = [
+        {
+            "name": item["name"],
+            "bytes": item["bytes"],
+            "sha256": item["sha256"],
+            "disposition": "attachment" if require_standard_attachment else actual[index]["disposition"],
+            "content_id": None if require_standard_attachment else actual[index]["content_id"],
+        }
+        for index, item in enumerate(message.get("attachments", []))
+        if index < len(actual)
+    ]
+    if len(expected) != len(message.get("attachments", [])) or actual != expected:
+        raise AppleMailError("Mail.app saved draft attachments do not exactly match the approved files.")
+    if require_standard_attachment:
+        if parsed.get_content_type() != "multipart/mixed":
+            raise AppleMailError("Mail.app did not preserve a standard multipart attachment draft.")
+        expected_from = [message["from"].lower()]
+        actual_from = [address.lower() for _, address in getaddresses(parsed.get_all("From", []))]
+        expected_to = [address.lower() for address in message.get("to", [])]
+        actual_to = [address.lower() for _, address in getaddresses(parsed.get_all("To", []))]
+        if actual_from != expected_from or actual_to != expected_to or parsed.get("Subject") != message["subject"]:
+            raise AppleMailError("Mail.app saved draft envelope does not exactly match the approved action.")
+        if len(body_parts) != 1:
+            raise AppleMailError("Mail.app saved draft did not preserve one exact plain-text body.")
+        expected_body = normalized_source_body(message["body"])
+        if not expected_body.endswith("\n"):
+            expected_body += "\n"
+        if body_parts[0] != expected_body:
+            raise AppleMailError("Mail.app saved draft body does not exactly match the approved action.")
 
 
 def revalidate_scheduled(item: dict[str, Any], config_path: str) -> dict[str, Any]:
@@ -730,15 +858,29 @@ def print_action(payload: dict[str, Any]) -> None:
 def command_status(args):
     accounts = live_accounts()
     allowed = select_allowed_accounts(args.config, accounts, None)
-    payload = {"status": "ok", "accounts": len(accounts), "allowed_sender_accounts": len(allowed)}
+    accessibility = run_write_bridge("accessibility-status", {})
+    if (
+        not isinstance(accessibility, dict)
+        or accessibility.get("status") != "ok"
+        or accessibility.get("accessibility") is not True
+    ):
+        raise AppleMailError("Mail Accessibility status did not return a valid confirmation.")
+    payload = {
+        "status": "ok",
+        "accounts": len(accounts),
+        "allowed_sender_accounts": len(allowed),
+        "accessibility": True,
+    }
     print_json(payload) if args.json else print(
-        f"Apple Mail write access ok | accounts={len(accounts)} | allowed_sender_accounts={len(allowed)}"
+        f"Apple Mail write access ok | accounts={len(accounts)} | "
+        f"allowed_sender_accounts={len(allowed)} | accessibility=ok"
     )
     return 0
 
 
 def command_action(args):
     message = normalize_payload(load_payload(args.payload), args.config)
+    require_supported_attachment_operation(args.command, message)
     action_hash = action_sha256(args.command, message)
     approval_store = approval_store_for(args.config, args.approval_store)
     if args.confirm:
@@ -756,6 +898,7 @@ def command_action(args):
 def command_schedule(args):
     now = now_epoch()
     message = normalize_payload(load_payload(args.payload), args.config)
+    require_supported_attachment_operation("schedule", message)
     schedule = validate_schedule(parse_send_at(args.at), args.expire_after_minutes, now)
     action_hash = action_sha256("schedule", message, schedule)
     approval_store = approval_store_for(args.config, args.approval_store)
