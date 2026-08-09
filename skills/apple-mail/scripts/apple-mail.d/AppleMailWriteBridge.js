@@ -7,14 +7,16 @@ function addRecipients(mail, message, values, kind) {
   values.forEach((address) => collection.push(constructor({address: address})));
 }
 
-/* Attachments belong to the message content element. Mail silently ignores a push onto the
-   message's own attachments collection after the first file, so every file goes through
-   content.attachments one at a time. */
+/* Attachments are inline rich-text elements. Pushing onto content.attachments inserts the file at
+   the start of the body, so target the final paragraph explicitly. Mail silently ignores a push
+   onto the message's own attachments collection after the first file. */
 function addAttachments(mail, message, values) {
   values.forEach((candidate) => {
     const file = stringValue(candidate);
     if (file.charAt(0) !== "/") throw new Error("Attachment paths must be absolute local file paths");
-    message.content.attachments.push(mail.Attachment({fileName: file}));
+    const paragraphs = message.content.paragraphs;
+    if (!paragraphs.length) throw new Error("Mail.app did not expose message content for attachment insertion");
+    paragraphs[paragraphs.length - 1].attachments.push(mail.Attachment({fileName: file}));
   });
 }
 
@@ -47,16 +49,18 @@ function compose(mail, operation, payload) {
   const message = mail.OutgoingMessage({
     sender: payload.from,
     subject: payload.subject,
-    content: payload.body,
     visible: false,
   });
   const attachments = payload.attachments || [];
   let inserted = false;
   try {
     /* Mail exposes an outgoing message's recipient and attachment collections only after it is
-       inserted, so insert first and populate afterwards. */
+       inserted. Set plain text only after insertion so Mail's composer supplies its native text
+       attributes instead of preserving a pre-composer rich-text run that renders badly in dark
+       mode. A trailing empty paragraph keeps inline attachments after the body. */
     mail.outgoingMessages.push(message);
     inserted = true;
+    message.content = payload.body + (attachments.length ? "\n\n" : "");
     addRecipients(mail, message, payload.to || [], "to");
     addRecipients(mail, message, payload.cc || [], "cc");
     addRecipients(mail, message, payload.bcc || [], "bcc");
@@ -102,8 +106,20 @@ function fakeMail(payload, scenario, events) {
     BccRecipient: function (record) { return record; },
     Attachment: function (record) { return record; },
     OutgoingMessage: function (record) {
+      let attachments = null;
+      let content = stringValue(record.content);
+      if (Object.prototype.hasOwnProperty.call(record, "content")) events.push("constructor-content");
+      Object.defineProperty(record, "content", {
+        configurable: true,
+        get: function () { return {attachments: attachments, paragraphs: [{attachments: attachments}]}; },
+        set: function (value) {
+          content = stringValue(value);
+          events.push(content.endsWith("\n\n") ? "content:separated" : "content:plain");
+        },
+      });
       record.save = function () { events.push("save"); if (scenario === "save-fails") throw new Error("synthetic save failure"); };
       record.send = function () { events.push("send"); return scenario !== "send-fails"; };
+      record.insert = function () { attachments = collection("attach"); };
       return record;
     },
     /* Mirrors Mail: recipient and content attachment collections exist only once the message is
@@ -113,7 +129,7 @@ function fakeMail(payload, scenario, events) {
       record.toRecipients = collection("recipient");
       record.ccRecipients = collection("recipient");
       record.bccRecipients = collection("recipient");
-      record.content = {attachments: collection("attach")};
+      record.insert();
     }},
     delete: function () { events.push("delete"); },
   };
