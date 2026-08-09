@@ -1499,16 +1499,35 @@ class AppleMailTest(unittest.TestCase):
         self.assertEqual(saved["result"], {"status": "ok", "operation": "draft", "attachments": 2})
         self.assertEqual(
             saved["events"],
-            ["push", "content:separated", "recipient", "attach", "attach", "save"],
+            [
+                "push",
+                "content:separated",
+                "recipient",
+                "paragraph-attach",
+                "paragraph-attach",
+                "save",
+            ],
         )
         self.assertNotIn("constructor-content", saved["events"])
+        self.assertNotIn("root-attach", saved["events"])
+        self.assertEqual(saved["content"], "Body\n\n")
 
-        payload["test_scenario"] = "attach-fails"
+        payload["test_scenario"] = "paragraph-attach-fails"
         failed = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
-        self.assertIn("synthetic attach failure", failed["error"])
+        self.assertIn("synthetic paragraph-attach failure", failed["error"])
         self.assertEqual(
             failed["events"],
-            ["push", "content:separated", "recipient", "attach", "delete"],
+            ["push", "content:separated", "recipient", "paragraph-attach", "delete"],
+        )
+
+        payload["test_scenario"] = "no-paragraphs"
+        no_paragraphs = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_compose", json.dumps(payload)
+        )
+        self.assertIn("did not expose message content", no_paragraphs["error"])
+        self.assertEqual(
+            no_paragraphs["events"],
+            ["push", "content:separated", "recipient", "delete"],
         )
 
         payload["test_scenario"] = "ok"

@@ -85,6 +85,7 @@ function compose(mail, operation, payload) {
 }
 
 function fakeMail(payload, scenario, events) {
+  let composedContent = "";
   function account(record) {
     return {id: function () { return record.id; }, emailAddresses: function () { return record.email_addresses; }};
   }
@@ -106,20 +107,30 @@ function fakeMail(payload, scenario, events) {
     BccRecipient: function (record) { return record; },
     Attachment: function (record) { return record; },
     OutgoingMessage: function (record) {
-      let attachments = null;
+      let rootAttachments = null;
+      let paragraphAttachments = null;
       let content = stringValue(record.content);
       if (Object.prototype.hasOwnProperty.call(record, "content")) events.push("constructor-content");
       Object.defineProperty(record, "content", {
         configurable: true,
-        get: function () { return {attachments: attachments, paragraphs: [{attachments: attachments}]}; },
+        get: function () {
+          return {
+            attachments: rootAttachments,
+            paragraphs: scenario === "no-paragraphs" ? [] : [{attachments: paragraphAttachments}],
+          };
+        },
         set: function (value) {
           content = stringValue(value);
+          composedContent = content;
           events.push(content.endsWith("\n\n") ? "content:separated" : "content:plain");
         },
       });
       record.save = function () { events.push("save"); if (scenario === "save-fails") throw new Error("synthetic save failure"); };
       record.send = function () { events.push("send"); return scenario !== "send-fails"; };
-      record.insert = function () { attachments = collection("attach"); };
+      record.insert = function () {
+        rootAttachments = collection("root-attach");
+        paragraphAttachments = collection("paragraph-attach");
+      };
       return record;
     },
     /* Mirrors Mail: recipient and content attachment collections exist only once the message is
@@ -132,6 +143,7 @@ function fakeMail(payload, scenario, events) {
       record.insert();
     }},
     delete: function () { events.push("delete"); },
+    testContent: function () { return composedContent; },
   };
 }
 
@@ -141,11 +153,12 @@ function run(argv) {
   if (operation === "_test_compose") {
     const events = [];
     const requestedOperation = payload.test_operation || "draft";
+    const mail = fakeMail(payload, payload.test_scenario || "ok", events);
     try {
-      const result = compose(fakeMail(payload, payload.test_scenario || "ok", events), requestedOperation, payload);
-      return JSON.stringify({result: result, events: events});
+      const result = compose(mail, requestedOperation, payload);
+      return JSON.stringify({result: result, events: events, content: mail.testContent()});
     } catch (error) {
-      return JSON.stringify({error: error.message, events: events});
+      return JSON.stringify({error: error.message, events: events, content: mail.testContent()});
     }
   }
   if (operation !== "draft" && operation !== "send") throw new Error("Unsupported Apple Mail write operation");
