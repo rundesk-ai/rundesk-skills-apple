@@ -14,6 +14,9 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+from email import policy
+from email.message import EmailMessage
+from email.parser import BytesParser
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -538,9 +541,29 @@ class AppleMailTest(unittest.TestCase):
     def test_write_status_is_non_mutating(self):
         self.allow_account()
         output = io.StringIO()
-        with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS), redirect_stdout(output):
+        with (
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(
+                self.write_module,
+                "run_write_bridge",
+                return_value={"status": "ok", "accessibility": True},
+            ) as bridge,
+            redirect_stdout(output),
+        ):
             self.assertEqual(self.write_module.main(["--config", str(self.config), "status"]), 0)
+        bridge.assert_called_once_with("accessibility-status", {})
         self.assertIn("allowed_sender_accounts=1", output.getvalue())
+        self.assertIn("accessibility=ok", output.getvalue())
+        with (
+            patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+            patch.object(
+                self.write_module,
+                "run_write_bridge",
+                return_value={"status": "ok", "accessibility": False},
+            ),
+            redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(self.write_module.main(["--config", str(self.config), "status"]), 1)
 
     def test_draft_and_send_are_dry_run_by_default(self):
         self.allow_account()
@@ -761,6 +784,21 @@ class AppleMailTest(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
+    def mime_source(self, attachments):
+        message = EmailMessage()
+        message["From"] = "allowed@example.test"
+        message["To"] = "recipient@example.test"
+        message["Subject"] = "Synthetic"
+        message.set_content("Synthetic body")
+        for attachment in attachments:
+            message.add_attachment(
+                attachment.read_bytes(),
+                maintype="application",
+                subtype="octet-stream",
+                filename=attachment.name,
+            )
+        return message.as_string()
+
     def test_attachment_dry_run_lists_every_file_for_approval(self):
         self.allow_account()
         first = self.attachment_file("first.txt", "one")
@@ -788,6 +826,51 @@ class AppleMailTest(unittest.TestCase):
             printed,
         )
 
+    def test_attachment_send_and_schedule_fail_before_confirmation_or_mail(self):
+        self.allow_account()
+        attachment = self.attachment_file("report.pdf", "synthetic pdf bytes")
+        payload_path = self.payload_path(attachments=[str(attachment)])
+        commands = (
+            ["send", "--payload", str(payload_path)],
+            ["schedule", "--payload", str(payload_path), "--at", self.at_offset(3600)],
+        )
+        for command in commands:
+            with self.subTest(operation=command[0]):
+                stderr = io.StringIO()
+                with (
+                    patch.object(self.write_module, "now_epoch", return_value=self.SCHEDULE_NOW),
+                    patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+                    patch.object(self.write_module, "run_write_bridge") as bridge,
+                    redirect_stderr(stderr),
+                ):
+                    rc = self.write_module.main(["--config", str(self.config), *command])
+                self.assertEqual(rc, 1)
+                bridge.assert_not_called()
+                self.assertIn("temporarily unavailable", stderr.getvalue())
+        self.assertFalse(self.write_module.approval_store_for(str(self.config)).exists())
+        self.assertFalse(self.schedule_store_path().exists())
+
+    def test_attachment_draft_rejects_cc_and_bcc_before_confirmation_or_mail(self):
+        self.allow_account()
+        attachment = self.attachment_file("report.pdf", "synthetic pdf bytes")
+        for field in ("cc", "bcc"):
+            with self.subTest(field=field):
+                payload_path = self.payload_path(
+                    attachments=[str(attachment)], **{field: ["copy@example.test"]}
+                )
+                stderr = io.StringIO()
+                with (
+                    patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS),
+                    patch.object(self.write_module, "run_write_bridge") as bridge,
+                    redirect_stderr(stderr),
+                ):
+                    rc = self.write_module.main(
+                        ["--config", str(self.config), "draft", "--payload", str(payload_path)]
+                    )
+                self.assertEqual(rc, 1)
+                bridge.assert_not_called()
+                self.assertIn("To recipients only", stderr.getvalue())
+
     def test_confirmed_action_passes_resolved_attachment_paths(self):
         self.allow_account()
         attachment = self.attachment_file()
@@ -797,8 +880,16 @@ class AppleMailTest(unittest.TestCase):
         calls = []
 
         def fake_bridge(action, payload):
-            calls.append((action, payload))
-            return {"status": "ok", "operation": action, "attachments": len(payload["attachments"])}
+            saved_payload = dict(payload)
+            saved_payload["eml_exists_during_bridge"] = Path(payload["eml_path"]).is_file()
+            saved_payload["eml_source"] = Path(payload["eml_path"]).read_text(encoding="utf-8")
+            calls.append((action, saved_payload))
+            return {
+                "status": "ok",
+                "operation": "draft",
+                "attachments": len(payload["attachments"]),
+                "saved_draft_source": saved_payload["eml_source"],
+            }
 
         with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
             message = self.write_module.normalize_payload(
@@ -825,7 +916,28 @@ class AppleMailTest(unittest.TestCase):
                 ]
             )
         self.assertEqual(rc, 0)
+        self.assertEqual(calls[0][0], "draft-mime")
         self.assertEqual(calls[0][1]["attachments"], [str(attachment.resolve())])
+        self.assertEqual(
+            calls[0][1]["attachment_metadata"],
+            [{"name": attachment.name, "bytes": attachment.stat().st_size}],
+        )
+        self.assertTrue(calls[0][1]["eml_exists_during_bridge"])
+        self.assertFalse(Path(calls[0][1]["eml_path"]).exists())
+        generated = BytesParser(policy=policy.default).parsebytes(
+            calls[0][1]["eml_source"].encode("utf-8")
+        )
+        self.assertEqual(generated.get_content_type(), "multipart/mixed")
+        generated_attachment = next(part for part in generated.walk() if part.get_filename())
+        self.assertEqual(generated_attachment.get_content_disposition(), "attachment")
+        self.assertIsNone(generated_attachment.get("Content-ID"))
+
+        wrong = self.attachment_file(attachment.name, "different attachment")
+        invalid_result = {
+            "saved_draft_source": self.mime_source([wrong]),
+        }
+        with self.assertRaisesRegex(self.write_module.AppleMailError, "exactly match"):
+            self.write_module.verify_saved_attachment_source(message, invalid_result)
 
     def test_confirmation_binds_attachment_contents(self):
         self.allow_account()
@@ -864,6 +976,85 @@ class AppleMailTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         bridge.assert_not_called()
         self.assertIn("belongs to another action", stderr.getvalue())
+
+    def test_standard_attachment_source_verification_covers_every_saved_field(self):
+        self.allow_account()
+        first = self.attachment_file("first.pdf", "first synthetic pdf")
+        second = self.attachment_file("second.txt", "second synthetic attachment")
+        payload_path = self.payload_path(
+            subject="Exact standard MIME draft",
+            body="First line\n\nSecond paragraph",
+            attachments=[str(first), str(second)],
+        )
+        with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
+            message = self.write_module.normalize_payload(
+                self.write_module.load_payload(payload_path), str(self.config)
+            )
+
+        def source_with(change=None):
+            draft = self.write_module.standard_attachment_message(message)
+            if change is not None:
+                change(draft)
+            return {"saved_draft_source": draft.as_string(policy=policy.SMTP)}
+
+        self.write_module.verify_saved_attachment_source(
+            message, source_with(), require_standard_attachment=True
+        )
+
+        envelope_cases = (
+            ("From", "other@example.test"),
+            ("To", "other@example.test"),
+            ("Subject", "Changed subject"),
+        )
+        for header, value in envelope_cases:
+            with self.subTest(changed_header=header):
+                def change_header(draft, header=header, value=value):
+                    draft.replace_header(header, value)
+
+                with self.assertRaisesRegex(self.write_module.AppleMailError, "envelope"):
+                    self.write_module.verify_saved_attachment_source(
+                        message, source_with(change_header), require_standard_attachment=True
+                    )
+
+        def change_body(draft):
+            body = next(
+                part for part in draft.walk()
+                if part.get_content_type() == "text/plain" and not part.get_filename()
+            )
+            body.set_content("Changed body", charset="utf-8")
+
+        with self.assertRaisesRegex(self.write_module.AppleMailError, "body"):
+            self.write_module.verify_saved_attachment_source(
+                message, source_with(change_body), require_standard_attachment=True
+            )
+
+        def make_related(draft):
+            draft.set_type("multipart/related")
+
+        with self.assertRaisesRegex(self.write_module.AppleMailError, "multipart"):
+            self.write_module.verify_saved_attachment_source(
+                message, source_with(make_related), require_standard_attachment=True
+            )
+
+        def make_inline(draft):
+            attachment = next(part for part in draft.walk() if part.get_filename())
+            attachment.replace_header(
+                "Content-Disposition", f'inline; filename="{attachment.get_filename()}"'
+            )
+            attachment["Content-ID"] = "<synthetic-inline>"
+
+        with self.assertRaisesRegex(self.write_module.AppleMailError, "exactly match"):
+            self.write_module.verify_saved_attachment_source(
+                message, source_with(make_inline), require_standard_attachment=True
+            )
+
+        def remove_last_attachment(draft):
+            draft.set_payload(list(draft.iter_parts())[:-1])
+
+        with self.assertRaisesRegex(self.write_module.AppleMailError, "exactly match"):
+            self.write_module.verify_saved_attachment_source(
+                message, source_with(remove_last_attachment), require_standard_attachment=True
+            )
 
     def test_attachment_payloads_fail_closed(self):
         self.allow_account()
@@ -1149,15 +1340,22 @@ class AppleMailTest(unittest.TestCase):
         self.assertIn("no longer matches the approved action", payload["results"][0]["error"])
         self.assertEqual(self.stored_items()[0]["status"], "failed")
 
-    def test_run_due_refuses_an_attachment_changed_after_approval(self):
+    def test_run_due_fails_legacy_attachment_queue_without_invoking_mail(self):
         self.allow_account()
         attachment = self.attachment_file("scheduled.txt", "approved bytes")
-        self.enqueue(self.at_offset(3600), payload_path=self.payload_path(attachments=[str(attachment)]))
-        attachment.write_text("swapped after approval", encoding="utf-8")
+        payload_path = self.payload_path(attachments=[str(attachment)])
+        with patch.object(self.write_module, "live_accounts", return_value=ACCOUNTS):
+            message = self.write_module.normalize_payload(
+                self.write_module.load_payload(payload_path), str(self.config)
+            )
+        schedule = {"send_at": self.SCHEDULE_NOW + 3600, "expire_after_minutes": 1440}
+        action_hash = self.write_module.action_sha256("schedule", message, schedule)
+        item = self.write_module.scheduled_item(message, schedule, action_hash, self.SCHEDULE_NOW)
+        self.write_module.write_scheduled(self.schedule_store_path(), [item])
         payload, bridge = self.run_due(self.SCHEDULE_NOW + 3600)
         bridge.assert_not_called()
         self.assertEqual(payload["failed"], 1)
-        self.assertIn("no longer matches the approved action", payload["results"][0]["error"])
+        self.assertIn("temporarily unavailable", payload["results"][0]["error"])
 
     def test_run_due_fails_closed_when_the_account_allowance_is_revoked(self):
         self.allow_account()
@@ -1535,6 +1733,234 @@ class AppleMailTest(unittest.TestCase):
         relative = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
         self.assertIn("absolute local file paths", relative["error"])
         self.assertEqual(relative["events"], ["push", "content:separated", "recipient", "delete"])
+
+    def test_native_write_bridge_uses_mail_composer_for_attachments_and_warns_on_failures(self):
+        payload = {
+            "account_id": "account-allowed",
+            "from": "allowed@example.test",
+            "to": ["recipient@example.test"],
+            "cc": [],
+            "bcc": [],
+            "subject": "Synthetic",
+            "body": "First line\nSecond line",
+            "attachments": ["/tmp/synthetic.pdf"],
+            "attachment_metadata": [{"name": "synthetic.pdf", "bytes": 123}],
+            "synthetic_accounts": [{"id": "account-allowed", "email_addresses": ["allowed@example.test"]}],
+            "test_operation": "draft",
+            "test_scenario": "ok",
+        }
+        mime_payload = dict(
+            payload,
+            account_name="allowed@example.test",
+            eml_path="/tmp/approved-draft.eml",
+        )
+        imported = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_mime_compose", json.dumps(mime_payload)
+        )
+        self.assertEqual(
+            imported["result"],
+            {
+                "status": "ok",
+                "operation": "draft",
+                "attachments": 1,
+                "saved_draft_id": "id",
+                "saved_draft_source": "source",
+            },
+        )
+        self.assertEqual(imported["events"], ["preflight", "open", "move", "verify", "close"])
+        for scenario, stage, partial in (
+            ("open-fails", "opening the standard MIME draft", False),
+            ("move-fails", "moving the standard MIME message into Drafts", True),
+            ("verify-fails", "verifying the saved standard MIME draft", True),
+            ("close-fails", "closing the imported draft viewer", True),
+        ):
+            with self.subTest(mime_import_failure=scenario):
+                mime_payload["test_scenario"] = scenario
+                failed = self.run_jxa(
+                    "AppleMailWriteBridge.js", "_test_mime_compose", json.dumps(mime_payload)
+                )
+                self.assertIn(stage, failed["error"])
+                self.assertEqual("partial draft may remain" in failed["error"], partial)
+
+        native_body = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_body", json.dumps(payload)
+        )
+        self.assertEqual(native_body["body"], "First line\nSecond line")
+        payload["body"] = "First line\n\nSecond paragraph\nLast line"
+        native_body = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_body", json.dumps(payload)
+        )
+        self.assertEqual(native_body["body"], "First line\n\nSecond paragraph\nLast line")
+        payload["body"] = "First line\r\n\u2028Second paragraph\u2029\u2029Last line"
+        payload["test_saved_body"] = (
+            "First line\r\n\u2028Second paragraph\u2029\u2029Last line\n\n"
+        )
+        native_body = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_body", json.dumps(payload)
+        )
+        self.assertEqual(native_body["body"], "First line\n\nSecond paragraph\n\nLast line")
+        self.assertEqual(native_body["canonical_body"], "First line\n\nSecond paragraph\n\nLast line")
+        self.assertEqual(
+            native_body["canonical_mail_body"], "First line\n\nSecond paragraph\n\nLast line"
+        )
+        for approved, saved in (("A\nB", "A\n\nB"), ("A\n\nB", "A\n\n\n\nB")):
+            with self.subTest(newline_collision=(approved, saved)):
+                collision = self.run_jxa(
+                    "AppleMailWriteBridge.js",
+                    "_test_native_body",
+                    json.dumps({"body": approved, "test_saved_body": saved}),
+                )
+                self.assertNotEqual(collision["canonical_mail_body"], collision["canonical_body"])
+        payload["body"] = "First line\n\nSecond paragraph\nLast line"
+        payload.pop("test_saved_body")
+        safety = dict(payload)
+        safety["test_scenario"] = "finish"
+        finished = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+        )
+        self.assertEqual(finished["status"], "ok")
+        self.assertEqual(
+            finished["events"],
+            [
+                "process:Mail",
+                "frontmost:true",
+                "action:AXRaise",
+                "raise:target",
+                "key:s",
+                "pause",
+                "raise:target",
+                "key:w",
+            ],
+        )
+        safety["test_scenario"] = "composer-delayed-attachment"
+        delayed = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+        )
+        self.assertEqual(delayed["status"], "ok")
+        self.assertEqual(delayed["events"].count("pause"), 3)
+        for scenario, expected in (
+            ("sender-mismatch", "different From"),
+            ("duplicate-window", "more than one matching"),
+            ("composer-missing-attachment", "did not finish loading"),
+            ("open-subject", "existing Mail composer"),
+            ("saved-subject", "saved Mail draft"),
+        ):
+            with self.subTest(production_safety=scenario):
+                safety["test_scenario"] = scenario
+                rejected = self.run_jxa(
+                    "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+                )
+                self.assertIn(expected, rejected["error"])
+
+        safety["test_scenario"] = "exact-saved"
+        verified = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+        )
+        self.assertEqual(verified["status"], "ok")
+        for scenario in (
+            "sender-substring",
+            "to-mismatch",
+            "cc-mismatch",
+            "bcc-mismatch",
+            "missing-attachment",
+            "wrong-filename",
+            "wrong-size",
+        ):
+            with self.subTest(saved_field_mismatch=scenario):
+                safety["test_scenario"] = scenario
+                rejected = self.run_jxa(
+                    "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+                )
+                self.assertIn("exact body, recipient, sender, and attachment", rejected["error"])
+        ordered = dict(safety)
+        ordered["attachments"] = ["/tmp/first.pdf", "/tmp/second.pdf"]
+        ordered["attachment_metadata"] = [
+            {"name": "first.pdf", "bytes": 10},
+            {"name": "second.pdf", "bytes": 20},
+        ]
+        ordered["test_scenario"] = "wrong-order"
+        wrong_order = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(ordered)
+        )
+        self.assertIn("exact body, recipient, sender, and attachment", wrong_order["error"])
+        safety["test_scenario"] = "body-mismatch"
+        mismatched_body = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+        )
+        self.assertIn("exact body", mismatched_body["error"])
+        safety["body"] = "First line\n\nSecond paragraph\nLast line  "
+        safety["test_scenario"] = "trailing-space-mismatch"
+        mismatched_space = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+        )
+        self.assertIn("exact body", mismatched_space["error"])
+        safety["body"] = "First line\nSecond paragraph\nLast line"
+        safety["test_scenario"] = "extra-blank-line"
+        mismatched_spacing = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_safety", json.dumps(safety)
+        )
+        self.assertIn("exact body", mismatched_spacing["error"])
+        payload["body"] = "First line\n\nSecond paragraph\nLast line"
+        saved = self.run_jxa("AppleMailWriteBridge.js", "_test_native_compose", json.dumps(payload))
+        self.assertEqual(saved["result"], {"status": "ok", "operation": "draft", "attachments": 1})
+        self.assertEqual(
+            saved["events"],
+            [
+                "accessibility-preflight",
+                "native-open",
+                "accessibility-finish",
+                "verify-saved-draft",
+            ],
+        )
+
+        for scenario, expected in (
+            ("sender-mismatch", "From mismatch"),
+            ("save-timeout", "save timeout"),
+        ):
+            with self.subTest(scenario=scenario):
+                payload["test_scenario"] = scenario
+                result = self.run_jxa("AppleMailWriteBridge.js", "_test_native_compose", json.dumps(payload))
+                self.assertIn(expected, result["error"])
+                self.assertIn("partial native composer", result["error"])
+                self.assertEqual(
+                    result["events"],
+                    ["accessibility-preflight", "native-open", "accessibility-finish"],
+                )
+
+        payload["test_scenario"] = "persistence-mismatch"
+        mismatched = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_native_compose", json.dumps(payload)
+        )
+        self.assertIn("persistence mismatch", mismatched["error"])
+        self.assertIn("partial native composer", mismatched["error"])
+        self.assertEqual(
+            mismatched["events"],
+            [
+                "accessibility-preflight",
+                "native-open",
+                "accessibility-finish",
+                "verify-saved-draft",
+            ],
+        )
+
+        payload["test_scenario"] = "open-fails"
+        unopened = self.run_jxa("AppleMailWriteBridge.js", "_test_native_compose", json.dumps(payload))
+        self.assertIn("native open failure", unopened["error"])
+        self.assertNotIn("partial native composer", unopened["error"])
+        self.assertEqual(unopened["events"], ["accessibility-preflight", "native-open"])
+
+        for scenario, expected in (
+            ("accessibility-denied", "Accessibility denial"),
+            ("duplicate-subject", "duplicate subject"),
+        ):
+            with self.subTest(scenario=scenario):
+                payload["test_scenario"] = scenario
+                rejected = self.run_jxa(
+                    "AppleMailWriteBridge.js", "_test_native_compose", json.dumps(payload)
+                )
+                self.assertIn(expected, rejected["error"])
+                self.assertNotIn("partial native composer", rejected["error"])
+                self.assertEqual(rejected["events"], ["accessibility-preflight"])
 
 
 if __name__ == "__main__":

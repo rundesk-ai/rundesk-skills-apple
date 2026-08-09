@@ -10,7 +10,8 @@ installation is required.
   workers in the user's XDG cache directory. The broker app bundles carry fixed identifiers and
   embedded privacy purpose strings so macOS can present and retain Calendar and Contacts consent
   while worker code changes across catalog updates.
-- Mail invokes the bundled JavaScript for Automation bridge with `/usr/bin/osascript`.
+- Mail invokes the bundled JavaScript for Automation bridge with `/usr/bin/osascript`. Attached
+  drafts use AppKit's native Mail compose service so Mail owns body and attachment formatting.
 - Messages reads the owner's local SQLite database read-only and uses AppleScript for sends.
 
 Compiled bridges and caches are disposable. They never belong in the catalog, a skill package,
@@ -84,7 +85,9 @@ Permissions are isolated by macOS and granted to the invoking terminal or agent 
 - Contacts: run `apple-contacts write status` in the agent session and approve the prompt from
   **Rundesk Apple Contacts**. Direct AddressBook SQLite reads separately require Full Disk Access
   for the process that serves the agent.
-- Mail: Mail Automation access.
+- Mail: Mail Automation access. Attachment-bearing native drafts additionally need Accessibility
+  access so the invoking terminal or agent process can verify the From address and save/close the
+  visible Mail composer.
 - Messages: Full Disk Access for history and Messages Automation access for sends. Grant Full Disk
   Access to the process that serves the Rundesk agent, not only to an interactive terminal, then
   restart that agent so the new grant applies.
