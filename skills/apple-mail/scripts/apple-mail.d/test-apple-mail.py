@@ -1453,7 +1453,7 @@ class AppleMailTest(unittest.TestCase):
         }
         failed = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
         self.assertIn("did not confirm", failed["error"])
-        self.assertEqual(failed["events"], ["push", "recipient", "send", "delete"])
+        self.assertEqual(failed["events"], ["push", "content:plain", "recipient", "send", "delete"])
 
         payload["synthetic_accounts"].append(
             {"id": "account-other", "email_addresses": ["allowed@example.test"]}
@@ -1476,7 +1476,10 @@ class AppleMailTest(unittest.TestCase):
         payload["test_scenario"] = "save-fails"
         failed_draft = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
         self.assertIn("synthetic save failure", failed_draft["error"])
-        self.assertEqual(failed_draft["events"], ["push", "recipient", "save", "delete"])
+        self.assertEqual(
+            failed_draft["events"],
+            ["push", "content:plain", "recipient", "save", "delete"],
+        )
 
     def test_write_bridge_attaches_after_insertion_and_cleans_failed_attachments(self):
         payload = {
@@ -1494,18 +1497,44 @@ class AppleMailTest(unittest.TestCase):
         }
         saved = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
         self.assertEqual(saved["result"], {"status": "ok", "operation": "draft", "attachments": 2})
-        self.assertEqual(saved["events"], ["push", "recipient", "attach", "attach", "save"])
+        self.assertEqual(
+            saved["events"],
+            [
+                "push",
+                "content:separated",
+                "recipient",
+                "paragraph-attach",
+                "paragraph-attach",
+                "save",
+            ],
+        )
+        self.assertNotIn("constructor-content", saved["events"])
+        self.assertNotIn("root-attach", saved["events"])
+        self.assertEqual(saved["content"], "Body\n\n")
 
-        payload["test_scenario"] = "attach-fails"
+        payload["test_scenario"] = "paragraph-attach-fails"
         failed = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
-        self.assertIn("synthetic attach failure", failed["error"])
-        self.assertEqual(failed["events"], ["push", "recipient", "attach", "delete"])
+        self.assertIn("synthetic paragraph-attach failure", failed["error"])
+        self.assertEqual(
+            failed["events"],
+            ["push", "content:separated", "recipient", "paragraph-attach", "delete"],
+        )
+
+        payload["test_scenario"] = "no-paragraphs"
+        no_paragraphs = self.run_jxa(
+            "AppleMailWriteBridge.js", "_test_compose", json.dumps(payload)
+        )
+        self.assertIn("did not expose message content", no_paragraphs["error"])
+        self.assertEqual(
+            no_paragraphs["events"],
+            ["push", "content:separated", "recipient", "delete"],
+        )
 
         payload["test_scenario"] = "ok"
         payload["attachments"] = ["relative/report.txt"]
         relative = self.run_jxa("AppleMailWriteBridge.js", "_test_compose", json.dumps(payload))
         self.assertIn("absolute local file paths", relative["error"])
-        self.assertEqual(relative["events"], ["push", "recipient", "delete"])
+        self.assertEqual(relative["events"], ["push", "content:separated", "recipient", "delete"])
 
 
 if __name__ == "__main__":
