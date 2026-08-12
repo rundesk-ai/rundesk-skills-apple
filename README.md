@@ -4,6 +4,11 @@ Guarded, local-first Agent Skills for Apple Calendar, Contacts, Mail, and Messag
 Each skill includes its command, implementation, offline tests, and operating guidance as one
 portable package.
 
+## Install with Rundesk CLI
+
+Rundesk CLI is the default installation path. It preserves executable files, manages updates and
+grants, checks package health, and keeps permission and runtime state outside the catalog.
+
 ```sh
 rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple            # says what it would do
 rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple --confirm
@@ -29,6 +34,28 @@ executable permission; a launcher that would not run as it stands is reported by
 caches, and state remain outside those packages. Removal takes the whole catalog, revokes every
 grant on its skills, and names each agent that lost one.
 
+## Use without Rundesk
+
+Rundesk is not required, but copy or symlink each complete package so its `SKILL.md`, references,
+launcher, and implementation stay together. For Codex, use `.agents/skills/` in a repository or
+`~/.agents/skills/` for personal use. For Claude Code, use `.claude/skills/` in a project or
+`~/.claude/skills/` for personal use.
+
+```sh
+# Codex project skill
+mkdir -p .agents/skills
+cp -R /path/to/rundesk-skills-apple/skills/apple-calendar .agents/skills/
+
+# Claude Code project skill
+mkdir -p .claude/skills
+cp -R /path/to/rundesk-skills-apple/skills/apple-calendar .claude/skills/
+```
+
+Direct copying does not grant macOS permissions or configure Rundesk health checks. Follow the
+package's `references/cli.md` and [ENVIRONMENTS.md](ENVIRONMENTS.md), preserve executable bits, and
+restart or begin a new session if the skill is not detected. Review an existing same-name
+destination before replacing it so an update cannot retain stale package files.
+
 ## Credentials
 
 None. These skills reach macOS through OS permissions and bundled bridges rather than API tokens,
@@ -51,3 +78,15 @@ and Automation remain explicit macOS user decisions.
 
 Read [ENVIRONMENTS.md](ENVIRONMENTS.md) for configuration, cache, state, permission, and
 dependency boundaries. Maintainers use [RELEASING.md](RELEASING.md).
+
+## Rundesk Skills collection
+
+| Catalog | Purpose |
+|---|---|
+| [rundesk-skills](https://github.com/rundesk-ai/rundesk-skills) | General guidance and software-development workflows |
+| [rundesk-skills-gamedev](https://github.com/rundesk-ai/rundesk-skills-gamedev) | Game design, production, C++, 2D systems, and Axmol |
+| [rundesk-skills-apple](https://github.com/rundesk-ai/rundesk-skills-apple) | Guarded local Apple integrations for macOS |
+| [rundesk-skills-integrations](https://github.com/rundesk-ai/rundesk-skills-integrations) | Guarded service integration CLIs |
+
+Standalone layout details: [Codex skills](https://learn.chatgpt.com/docs/build-skills) and
+[Claude Code skills](https://code.claude.com/docs/en/slash-commands).
