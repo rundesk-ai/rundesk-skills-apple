@@ -1,92 +1,128 @@
 # Rundesk Apple Skills
 
-Guarded, local-first Agent Skills for Apple Calendar, Contacts, Mail, and Messages on macOS.
-Each skill includes its command, implementation, offline tests, and operating guidance as one
-portable package.
+Guarded, local-first Agent Skills for Apple Calendar, Contacts, Mail, and Messages on macOS. Each
+skill is a portable package containing its command, implementation, operating guidance, and offline
+tests.
 
-## Install with Rundesk CLI
+## Skills
 
-Rundesk CLI is the default installation path. It preserves executable files, manages updates and
-grants, checks package health, and keeps permission and runtime state outside the catalog.
+- `apple-calendar` - EventKit reads and guarded event mutations.
+- `apple-contacts` - read-only AddressBook access and guarded Contacts.framework writes.
+- `apple-mail` - allowlisted Mail.app reads, drafts, and guarded immediate or scheduled sends.
+- `apple-messages` - read-only local message history and guarded one-to-one sends.
+
+## Install
+
+Rundesk CLI installs the complete catalog, preserves executable files, and keeps permissions,
+configuration, caches, and state outside the catalog. Installation grants no skill automatically.
 
 ```sh
-rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple            # says what it would do
+rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple
 rundesk skills install https://github.com/rundesk-ai/rundesk-skills-apple --confirm
-rundesk skills grant <agent> rundesk-skills-apple/apple-calendar
+rundesk skills grant agent-name rundesk-skills-apple/apple-calendar
 ```
 
-Installation makes all four skills available and grants none automatically. A skill is addressed
-`<catalog>/<skill>`, so these names never clash with a skill of your own; `--as` stands a grant
-under another name when one agent would otherwise hold two of a name.
+The first install command previews the exact change; `--confirm` applies it. Skills use the verified
+`<catalog>/<skill>` grant syntax. Updates and removal follow the same preview-first contract:
 
 ```sh
-rundesk skills catalogs
 rundesk skills update rundesk-skills-apple
 rundesk skills update rundesk-skills-apple --confirm
 rundesk skills remove rundesk-skills-apple
 rundesk skills remove rundesk-skills-apple --confirm
 ```
 
-The unconfirmed commands preview their exact changes; `--confirm` applies them. Every update
-restores the repository's complete package files, including each launcher and its
-executable permission; a launcher that would not run as it stands is reported by
-`rundesk skills doctor`, which names `chmod +x` as the fix. Configuration, permission grants,
-caches, and state remain outside those packages. Removal takes the whole catalog, revokes every
-grant on its skills, and names each agent that lost one.
+To use a package without Rundesk, copy or symlink its complete `skills/<name>/` directory into the
+skill directory supported by the agent runtime. Preserve executable bits, review an existing
+same-name destination before replacing it, follow the package's `references/cli.md`, and start a new
+agent session after installation.
 
-## Use without Rundesk
-
-Rundesk is not required, but copy or symlink each complete package so its `SKILL.md`, references,
-launcher, and implementation stay together. For Codex, use `.agents/skills/` in a repository or
-`~/.agents/skills/` for personal use. For Claude Code, use `.claude/skills/` in a project or
-`~/.claude/skills/` for personal use.
+Apple packages have no credential profiles. The profile command reports that directly, and doctor
+checks one agent's grants and executable commands. Configuration is intentionally refused because
+the package declares no credential values:
 
 ```sh
-# Codex project skill
-mkdir -p .agents/skills
-cp -R /path/to/rundesk-skills-apple/skills/apple-calendar .agents/skills/
-
-# Claude Code project skill
-mkdir -p .claude/skills
-cp -R /path/to/rundesk-skills-apple/skills/apple-calendar .claude/skills/
+rundesk skills configure rundesk-skills-apple/apple-calendar
+rundesk skills profiles rundesk-skills-apple/apple-calendar
+rundesk skills doctor agent-name
 ```
 
-Direct copying does not grant macOS permissions or configure Rundesk health checks. Follow the
-package's `references/cli.md` and [ENVIRONMENTS.md](ENVIRONMENTS.md), preserve executable bits, and
-restart or begin a new session if the skill is not detected. Review an existing same-name
-destination before replacing it so an update cannot retain stale package files.
+## Requirements
 
-## Credentials
+- macOS with the documented Calendar, Contacts, Mail, Messages, Automation, Accessibility, or Full
+  Disk Access permissions for the chosen command. Only the owner can grant these permissions.
+- System Python 3.9+ and documented macOS frameworks. No package manager or virtual environment is
+  required.
+- No API credentials. These packages use local macOS permissions and bundled bridges, so they do not
+  declare `rundesk.json` files.
 
-None. These skills reach macOS through OS permissions and bundled bridges rather than API tokens,
-so no package here declares a `rundesk.json`. `rundesk skills profiles
-rundesk-skills-apple/<skill>` reports that there are no profiles; `rundesk skills configure
-rundesk-skills-apple/<skill>` is refused because there is nothing to configure. `rundesk skills
-doctor [<agent>]` still checks that grants and scripts are usable. Each skill also requires macOS
-permissions only the owner can grant.
+Read [ENVIRONMENTS.md](ENVIRONMENTS.md) for the exact runtime, configuration, permission, cache, and
+state contract. Never place personal Apple data or permission artifacts in this repository.
 
-## Included skills
+## Repository layout
 
-- `apple-calendar` — EventKit reads and guarded event mutations.
-- `apple-contacts` — read-only AddressBook access and guarded Contacts.framework writes.
-- `apple-mail` — allowlisted Mail.app reads, drafts, and guarded immediate or scheduled sends.
-- `apple-messages` — read-only local message history and guarded one-to-one sends.
+```text
+.
+├── .github/
+│   ├── ISSUE_TEMPLATE/{bug-report.md,change-proposal.md}
+│   └── pull_request_template.md
+├── skills/
+│   └── <name>/
+│       ├── SKILL.md
+│       ├── references/cli.md
+│       └── scripts/
+│           ├── <name>
+│           └── <name>.d/        Python, Apple bridges, metadata, and offline tests
+├── tests/test_catalog.py
+├── AGENTS.md
+├── CLAUDE.md
+├── ENVIRONMENTS.md
+├── RELEASING.md
+└── manifest.json
+```
 
-These integrations use macOS's system Python and frameworks. They do not create a virtual
-environment or install packages. Permissions such as Full Disk Access, Contacts, Calendar,
-and Automation remain explicit macOS user decisions.
+Each package is an independent runtime and permission boundary. Runtime files never depend on a
+sibling package or a root-local library.
 
-Read [ENVIRONMENTS.md](ENVIRONMENTS.md) for configuration, cache, state, permission, and
-dependency boundaries. Maintainers use [RELEASING.md](RELEASING.md).
+## Development
 
-## Rundesk Skills collection
+```sh
+python3 -m unittest discover -s tests -v
+python3 skills/apple-calendar/scripts/apple-calendar.d/test-apple-calendar.py -q
+skills/apple-calendar/scripts/apple-calendar --help
+repository_root="$(pwd)"
+(cd /tmp && "$repository_root/skills/apple-calendar/scripts/apple-calendar" --help)
+git diff --check
+```
 
-| Catalog | Purpose |
-|---|---|
-| [rundesk-skills](https://github.com/rundesk-ai/rundesk-skills) | General guidance and software-development workflows |
-| [rundesk-skills-gamedev](https://github.com/rundesk-ai/rundesk-skills-gamedev) | Game design, production, C++, 2D systems, and Axmol |
-| [rundesk-skills-apple](https://github.com/rundesk-ai/rundesk-skills-apple) | Guarded local Apple integrations for macOS |
-| [rundesk-skills-integrations](https://github.com/rundesk-ai/rundesk-skills-integrations) | Guarded service integration CLIs |
+The root suite is the catalog gate and runs every package's offline suite. A changed write path also
+requires a safe live application probe; offline doubles alone do not prove an Apple write works.
+Read [AGENTS.md](AGENTS.md) before contributing for approval, privacy, validation, and documentation
+requirements.
 
-Standalone layout details: [Codex skills](https://learn.chatgpt.com/docs/build-skills) and
-[Claude Code skills](https://code.claude.com/docs/en/slash-commands).
+## Creating a skill catalog
+
+Use the organization-wide [skill catalog guide](https://github.com/rundesk-ai/rundesk-cli/blob/main/docs/catalogs.md)
+for package structure, manifests, runtime isolation, public documentation, testing, and release
+contracts. Extend an existing Apple package when it already owns the framework or command surface.
+
+## Contributing
+
+- Report reproducible incorrect behavior with the [bug report template](.github/ISSUE_TEMPLATE/bug-report.md).
+- Propose a skill, command, or repository improvement with the [change proposal template](.github/ISSUE_TEMPLATE/change-proposal.md).
+- Prepare changes with the [pull request template](.github/pull_request_template.md) and provide
+  evidence for the exact head commit.
+
+Contributions must keep `README.md`, `manifest.json`, `skills/`, and catalog tests aligned and must
+contain no credentials, personal data, private identifiers, or owner-specific paths.
+
+## Releases
+
+Follow [RELEASING.md](RELEASING.md) for semantic versioning, tags, and publication. Changes to
+published catalog contents or runtime behavior require the version treatment it defines.
+Process-only guide or template changes, including `AGENTS.md`, `CLAUDE.md`, and GitHub templates, do
+not require a manifest version bump.
+
+## License
+
+This repository is licensed under the [MIT License](LICENSE).
