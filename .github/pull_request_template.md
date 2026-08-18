@@ -38,7 +38,8 @@
 
 - [ ] The diff contains no personal data, message or mail excerpt, local database copy, account identifier, email address, phone number, owner-specific path, or unrelated artifact.
 - [ ] Reads remain bounded by default and report truncation explicitly.
-- [ ] Mutations remain dry-runs until an exact `--confirm` request and report unearned work as failure.
+- [ ] Every mutation remains a preview until the owner approves the exact target and effect and supplies the package's exact confirmation input.
+- [ ] Commands report unearned work as failure.
 - [ ] No package imports, executes, or depends on a sibling package.
 - [ ] Runtime code remains system Python 3.9+, standard-library and documented macOS-framework only, unless the owner approved a dependency.
 - [ ] Tests remain offline and do not reach a real account, mailbox, or Apple service.
@@ -59,3 +60,9 @@
 ```text
 
 ```
+
+## Agent
+
+<!-- Replace the placeholder with the filing agent's display name. Do not add provider, model, tool, session, or generated-by branding. -->
+
+🤖 by <Agent>
