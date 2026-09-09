@@ -11,7 +11,9 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from email import policy
@@ -1961,6 +1963,112 @@ class AppleMailTest(unittest.TestCase):
                 self.assertIn(expected, rejected["error"])
                 self.assertNotIn("partial native composer", rejected["error"])
                 self.assertEqual(rejected["events"], ["accessibility-preflight"])
+
+    def stalled_bridge_call(self, invocation, **kwargs):
+        raise subprocess.TimeoutExpired(invocation, kwargs["timeout"])
+
+    def osascript_pids(self, token):
+        # `pgrep -f` matches any argv containing the token, so confirm each hit really is an
+        # osascript process rather than an unrelated one that happens to quote the command line.
+        found = subprocess.run(
+            ["/usr/bin/pgrep", "-f", token], capture_output=True, text=True, check=False
+        )
+        running = []
+        for pid in found.stdout.split():
+            command = subprocess.run(
+                ["/bin/ps", "-p", pid, "-o", "comm="], capture_output=True, text=True, check=False
+            )
+            if Path(command.stdout.strip()).name == "osascript":
+                running.append(pid)
+        return running
+
+    def test_account_discovery_is_bounded_shorter_than_message_reads(self):
+        self.assertLess(
+            self.library.ACCOUNT_DISCOVERY_TIMEOUT_SECONDS,
+            self.library.AUTOMATION_TIMEOUT_SECONDS,
+        )
+        observed = []
+
+        def stalled(invocation, **kwargs):
+            observed.append(kwargs["timeout"])
+            return self.stalled_bridge_call(invocation, **kwargs)
+
+        with patch.object(self.library.subprocess, "run", side_effect=stalled):
+            with self.assertRaises(self.library.AppleMailError) as discovery:
+                self.library.live_accounts()
+            with self.assertRaises(self.library.AppleMailError) as message_read:
+                self.library.run_bridge("messages", ["account-allowed"])
+
+        self.assertEqual(
+            observed,
+            [
+                self.library.ACCOUNT_DISCOVERY_TIMEOUT_SECONDS,
+                self.library.AUTOMATION_TIMEOUT_SECONDS,
+            ],
+        )
+        self.assertIn("account discovery", str(discovery.exception))
+        self.assertEqual(
+            str(message_read.exception),
+            f"Mail.app automation timed out after {self.library.AUTOMATION_TIMEOUT_SECONDS} seconds.",
+        )
+
+    def test_stalled_account_discovery_reports_the_non_response_without_naming_a_cause(self):
+        self.allow_account()
+        commands = (
+            ("setup status", lambda: self.setup_module.main(["--config", str(self.config), "status"])),
+            ("read inbox", lambda: self.read_module.main(["inbox", "--config", str(self.config)])),
+        )
+        for label, command in commands:
+            with self.subTest(command=label):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    patch.object(self.library.subprocess, "run", side_effect=self.stalled_bridge_call),
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                ):
+                    rc = command()
+                self.assertEqual(rc, 1)
+                self.assertEqual(stdout.getvalue(), "")
+                message = stderr.getvalue()
+                self.assertIn("Mail.app did not answer account discovery within 20 seconds.", message)
+                self.assertIn("Mail account scripting is unresponsive", message)
+                self.assertIn("Quit Mail.app, reopen it, and retry.", message)
+                # A stall cannot distinguish Mail state from Automation access, so the message
+                # reports the non-response and names neither as the cause.
+                for cause in (
+                    "permission",
+                    "denial",
+                    "denied",
+                    "authoriz",
+                    "full disk access",
+                    "consent",
+                    "grant",
+                ):
+                    self.assertNotIn(cause, message.lower())
+
+    def test_stalled_account_discovery_leaves_no_bridge_process_behind(self):
+        token = uuid.uuid4().hex
+        stall_bridge = Path(self.tmp.name) / f"apple-mail-stall-{token}.js"
+        # Pure JavaScript: osascript blocks for far longer than the bound without addressing Mail
+        # or any other application, so nothing here depends on Automation permission or Mail state.
+        stall_bridge.write_text(
+            "function run() { const until = Date.now() + 60000; while (Date.now() < until) {} }\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.osascript_pids(token), [])
+
+        started = time.monotonic()
+        with (
+            patch.object(self.library, "BRIDGE", stall_bridge),
+            patch.object(self.library, "ACCOUNT_DISCOVERY_TIMEOUT_SECONDS", 2),
+        ):
+            with self.assertRaises(self.library.AppleMailError) as stalled:
+                self.library.live_accounts()
+        elapsed = time.monotonic() - started
+
+        self.assertIn("did not answer account discovery within 2 seconds", str(stalled.exception))
+        self.assertLess(elapsed, 15)
+        self.assertEqual(self.osascript_pids(token), [])
 
 
 if __name__ == "__main__":
