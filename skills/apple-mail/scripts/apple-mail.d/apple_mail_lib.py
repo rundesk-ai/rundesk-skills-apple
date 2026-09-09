@@ -27,6 +27,10 @@ def default_config() -> Path:
 DEFAULT_CONFIG = default_config()
 BRIDGE = Path(__file__).resolve().parent / "AppleMailBridge.js"
 AUTOMATION_TIMEOUT_SECONDS = 60
+# Account discovery runs before every account-bound command and only enumerates accounts Mail
+# already holds, so it is bounded well below the mailbox and message reads that fetch content.
+# A Mail whose account scripting has stalled never answers this call at all.
+ACCOUNT_DISCOVERY_TIMEOUT_SECONDS = 20
 
 
 class AppleMailError(RuntimeError):
@@ -90,7 +94,13 @@ def save_config(path: str | Path, allowed_account_ids: list[str]) -> None:
         raise AppleMailError(f"Unable to write Apple Mail config: {config_path}: {exc}") from exc
 
 
-def run_bridge(command: str, args: list[str] | None = None) -> Any:
+def run_bridge(
+    command: str,
+    args: list[str] | None = None,
+    *,
+    timeout: int = AUTOMATION_TIMEOUT_SECONDS,
+    timeout_message: str | None = None,
+) -> Any:
     invocation = ["/usr/bin/osascript", "-l", "JavaScript", str(BRIDGE), command, *(args or [])]
     try:
         result = subprocess.run(
@@ -99,13 +109,15 @@ def run_bridge(command: str, args: list[str] | None = None) -> Any:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=AUTOMATION_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
         raise AppleMailError(f"Mail.app automation failed: {detail}") from exc
     except subprocess.TimeoutExpired as exc:
-        raise AppleMailError(f"Mail.app automation timed out after {AUTOMATION_TIMEOUT_SECONDS} seconds.") from exc
+        raise AppleMailError(
+            timeout_message or f"Mail.app automation timed out after {timeout} seconds."
+        ) from exc
     except OSError as exc:
         raise AppleMailError(f"Unable to start Mail.app automation: {exc}") from exc
     try:
@@ -115,7 +127,14 @@ def run_bridge(command: str, args: list[str] | None = None) -> Any:
 
 
 def live_accounts() -> list[dict[str, Any]]:
-    payload = run_bridge("accounts")
+    payload = run_bridge(
+        "accounts",
+        timeout=ACCOUNT_DISCOVERY_TIMEOUT_SECONDS,
+        timeout_message=(
+            f"Mail.app did not answer account discovery within {ACCOUNT_DISCOVERY_TIMEOUT_SECONDS} "
+            "seconds. Mail account scripting is unresponsive. Quit Mail.app, reopen it, and retry."
+        ),
+    )
     if not isinstance(payload, list):
         raise AppleMailError("Mail.app account response was not a list.")
     return payload

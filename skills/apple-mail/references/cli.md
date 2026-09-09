@@ -240,6 +240,7 @@ Mailbox paths are exact paths returned by `mailboxes`; each segment is URL-encod
 - Attachment metadata on read reports whether Mail says an incoming attachment is downloaded, but reads never save attachment bytes. Outgoing attachments are a separate write-side feature.
 - Mail's native compose service receives the body first and attachment file URLs afterward. The
   Python guard still verifies every file's existence, type, size, and hash before that service opens.
+- Account discovery bounds Mail at 20 seconds because every account-bound command runs it first; mailbox and message reads keep the 60-second automation bound. Exceeding the bound means account discovery did not answer within it; that alone does not identify whether Mail state or Automation access caused the non-response. Quit Mail.app, reopen it, and retry; if the stall persists, verify Mail Automation access.
 - A send timeout or malformed automation response is indeterminate: check Sent and Outbox before approving a retry. For draft failures, check Drafts first.
 - A scheduled send is only as reliable as its timer, and an unwired queue delivers nothing. Confirm `run-due` is wired before reporting mail as scheduled, and read `write scheduled` rather than assuming a queued entry was delivered.
 - A scheduled entry stores the attachment path, not the bytes. Moving, editing, or deleting the file after approval fails that entry instead of sending different content than was approved.
