@@ -24,7 +24,7 @@ Keep these sources of truth aligned with the shipped files and behavior.
    Read every `SKILL.md`, reference, script, and test you will change before editing it.
 2. Inspect the skills supplied by the runtime and load the smallest complete set that applies. Use
    `writing-skills` for `SKILL.md`, applicable runtime or testing guidance for code and tests,
-   `naming-grammar-conventions` for recurring or cross-layer terminology, and `managing-github` for
+   `naming-software-terms` for recurring or cross-layer terminology, and `managing-github` for
    pull requests or releases.
 3. Search before creating. Reuse or extend the package that already owns an Apple framework or
    command surface instead of introducing a competing path.
@@ -143,7 +143,7 @@ behavior. If live proof is unavailable, report validation as incomplete instead 
   boundaries. Do not narrate mechanics already clear from the code.
 - Use lowercase hyphenated package and command names. Keep the directory, manifest name, launcher,
   frontmatter `name`, and documented command spelling aligned.
-- Use `naming-grammar-conventions` when a term recurs across the CLI, Python, bridges, output, and
+- Use `naming-software-terms` when a term recurs across the CLI, Python, bridges, output, and
   documentation. Preserve fixed Apple framework terminology at its boundary.
 
 ## Documentation duties
